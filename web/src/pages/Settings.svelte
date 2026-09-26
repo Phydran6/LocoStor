@@ -46,8 +46,8 @@
         <button
           class="flex flex-col items-center gap-2 rounded-lg border px-3 py-4 text-sm font-medium transition-colors
             {theme.value === t.value
-            ? 'border-sky-500 bg-sky-500/10 text-sky-700 dark:text-sky-300'
-            : 'border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700'}"
+            ? 'border-brand-500 bg-brand-500/10 text-brand-700 dark:text-brand-300'
+            : 'border-zinc-200 text-zinc-600 hover:border-zinc-300 dark:border-ink-800 dark:text-zinc-400 dark:hover:border-zinc-700'}"
           onclick={() => setTheme(t.value)}
           aria-pressed={theme.value === t.value}
         >

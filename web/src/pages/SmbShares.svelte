@@ -10,8 +10,10 @@
   import { toast, confirm } from '../lib/ui.svelte.js';
 
   let shares = $state(null);
+  let external = $state([]);
   let users = $state([]);
   let error = $state('');
+  let optionsText = $state('');
 
   let editOpen = $state(false);
   let editing = $state(null); // original name, null for new
@@ -22,11 +24,38 @@
 
   async function load() {
     try {
-      shares = await api.get('/api/smb/shares');
+      [shares, external] = await Promise.all([api.get('/api/smb/shares'), api.get('/api/smb/external')]);
       error = '';
     } catch (e) {
       error = e.message;
     }
+  }
+
+  async function adopt(x) {
+    const yes = await confirm({
+      title: 'Take over share',
+      message: `Manage "${x.name}" with LocoStor? It is removed from ${x.source} (a backup is kept) and keeps working unchanged.`,
+      confirmLabel: 'Take over',
+    });
+    if (!yes) return;
+    try {
+      await api.post('/api/smb/external/adopt', { name: x.name });
+      toast.success(`"${x.name}" is now managed by LocoStor`);
+      load();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  function parseOptions(text) {
+    return text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith(';'))
+      .map((l) => {
+        const i = l.indexOf('=');
+        return i < 0 ? { key: l, value: '' } : { key: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+      });
   }
 
   onMount(() => {
@@ -38,6 +67,7 @@
     editing = null;
     form = { name: '', path: '', comment: '', read_only: false, browseable: true, guest_ok: false, enabled: true };
     usersText = '';
+    optionsText = '';
     formError = '';
     editOpen = true;
   }
@@ -46,6 +76,7 @@
     editing = s.name;
     form = { ...s };
     usersText = s.valid_users.join(', ');
+    optionsText = s.options.map((o) => `${o.key} = ${o.value}`).join('\n');
     formError = '';
     editOpen = true;
   }
@@ -60,7 +91,7 @@
     e.preventDefault();
     saving = true;
     formError = '';
-    const body = { ...form, valid_users: usersText.split(/[\s,]+/).filter(Boolean) };
+    const body = { ...form, valid_users: usersText.split(/[\s,]+/).filter(Boolean), options: parseOptions(optionsText) };
     try {
       if (editing === null) await api.post('/api/smb/shares', body);
       else await api.put(`/api/smb/shares/${encodeURIComponent(editing)}`, body);
@@ -130,6 +161,7 @@
                   <Badge tone={s.read_only ? 'muted' : 'info'}>{s.read_only ? 'read only' : 'read/write'}</Badge>
                   {#if s.guest_ok}<Badge tone="warn">guest</Badge>{/if}
                   {#if !s.browseable}<Badge>hidden</Badge>{/if}
+                  {#if s.options.length}<Badge>+{s.options.length} {s.options.length === 1 ? 'option' : 'options'}</Badge>{/if}
                 </div>
               </td>
               <td class="text-xs">{s.valid_users.length ? s.valid_users.join(', ') : 'all users'}</td>
@@ -145,6 +177,56 @@
     </div>
   {/if}
 </div>
+
+{#if external.length}
+  <section class="card mt-6 overflow-hidden">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Other shares on this system</h2>
+        <p class="mt-0.5 text-xs text-zinc-500">Set up outside LocoStor. Take a share over to edit it here – its file is backed up first.</p>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Path</th>
+            <th>Access</th>
+            <th>Defined in</th>
+            <th class="text-right"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each external as x}
+            <tr>
+              <td>
+                <p class="font-medium text-zinc-900 dark:text-zinc-100">{x.name}</p>
+                {#if x.comment}<p class="text-xs text-zinc-500">{x.comment}</p>{/if}
+              </td>
+              <td class="mono">{x.path || '–'}</td>
+              <td>
+                <div class="flex flex-wrap gap-1">
+                  <Badge tone={x.read_only ? 'muted' : 'info'}>{x.read_only ? 'read only' : 'read/write'}</Badge>
+                  {#if x.guest_ok}<Badge tone="warn">guest</Badge>{/if}
+                  {#if x.options.length}<Badge>+{x.options.length}</Badge>{/if}
+                </div>
+              </td>
+              <td class="mono text-xs text-zinc-500">{x.source}</td>
+              <td class="text-right whitespace-nowrap">
+                {#if x.adoptable}
+                  <button class="btn btn-secondary" onclick={() => adopt(x)}>Take over</button>
+                {:else}
+                  <span class="text-xs text-zinc-500" title={x.reason}>{x.reason}</span>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{/if}
 
 <Modal title={editing === null ? 'Add SMB share' : `Edit share "${editing}"`} bind:open={editOpen}>
   <form id="share-form" class="space-y-4" onsubmit={save}>
@@ -169,16 +251,21 @@
       {#if users.length}
         <div class="mt-1.5 flex flex-wrap gap-1">
           {#each users as u}
-            <button type="button" class="rounded-md bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 hover:bg-sky-100 hover:text-sky-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-sky-900/40 dark:hover:text-sky-300" onclick={() => addUser(u.name)}>+ {u.name}</button>
+            <button type="button" class="rounded-md bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 hover:bg-brand-100 hover:text-brand-700 dark:bg-ink-800 dark:text-zinc-400 dark:hover:bg-brand-900/40 dark:hover:text-brand-300" onclick={() => addUser(u.name)}>+ {u.name}</button>
           {/each}
         </div>
       {/if}
     </div>
-    <div class="space-y-3 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+    <div class="space-y-3 rounded-lg border border-zinc-200 p-3 dark:border-ink-800">
       <Toggle bind:checked={form.enabled} label="Enabled" />
       <Toggle bind:checked={form.read_only} label="Read only" />
       <Toggle bind:checked={form.browseable} label="Visible in network browser" />
       <Toggle bind:checked={form.guest_ok} label="Allow guest access" hint="Anyone on the network can connect without a password." />
+    </div>
+    <div>
+      <label class="label" for="s-options">More options</label>
+      <textarea id="s-options" class="input mono min-h-20" rows="3" bind:value={optionsText} placeholder="force user = nobody&#10;create mask = 0664"></textarea>
+      <p class="hint">Any smb.conf share parameter, one <span class="mono">key = value</span> per line.</p>
     </div>
     {#if formError}<p class="flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400"><Icon name="alert" size={16} />{formError}</p>{/if}
   </form>

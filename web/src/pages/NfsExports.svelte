@@ -10,6 +10,7 @@
   import { toast, confirm } from '../lib/ui.svelte.js';
 
   let exports = $state(null);
+  let external = $state([]);
   let error = $state('');
 
   let editOpen = $state(false);
@@ -26,10 +27,26 @@
 
   async function load() {
     try {
-      exports = await api.get('/api/nfs/exports');
+      [exports, external] = await Promise.all([api.get('/api/nfs/exports'), api.get('/api/nfs/external')]);
       error = '';
     } catch (e) {
       error = e.message;
+    }
+  }
+
+  async function adopt(x) {
+    const yes = await confirm({
+      title: 'Take over export',
+      message: `Manage ${x.pseudo} with LocoStor? It is removed from ${x.source} (a backup is kept) and served by NFS-Ganesha from now on.`,
+      confirmLabel: 'Take over',
+    });
+    if (!yes) return;
+    try {
+      await api.post('/api/nfs/external/adopt', { key: x.key });
+      toast.success(`${x.pseudo} is now managed by LocoStor`);
+      load();
+    } catch (err) {
+      toast.error(err.message);
     }
   }
 
@@ -152,10 +169,51 @@
 </div>
 
 {#if exports?.length}
-  <div class="mt-4 rounded-lg border border-zinc-200 bg-white/60 px-4 py-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400">
+  <div class="mt-4 rounded-lg border border-zinc-200 bg-white/60 px-4 py-3 text-sm text-zinc-600 dark:border-ink-800 dark:bg-zinc-900/60 dark:text-zinc-400">
     <p class="mb-1 flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-300"><Icon name="info" size={16} />Mount on a client</p>
     <code class="mono block overflow-x-auto whitespace-nowrap">mount -t nfs4 {host}:{exports[0].pseudo} /mnt/{exports[0].pseudo.split('/').pop()}</code>
   </div>
+{/if}
+
+{#if external.length}
+  <section class="card mt-6 overflow-hidden">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">Other exports on this system</h2>
+        <p class="mt-0.5 text-xs text-zinc-500">Set up outside LocoStor. Take an export over to edit it here – its file is backed up first.</p>
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Export</th>
+            <th>Path</th>
+            <th>Clients</th>
+            <th>Defined in</th>
+            <th class="text-right"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each external as x}
+            <tr>
+              <td class="mono font-medium text-zinc-900 dark:text-zinc-100">{x.pseudo}</td>
+              <td class="mono">{x.path}</td>
+              <td class="mono text-xs">{x.clients.length ? x.clients.join(', ') : '*'}</td>
+              <td class="mono text-xs text-zinc-500">{x.source}</td>
+              <td class="text-right">
+                {#if x.adoptable}
+                  <button class="btn btn-secondary" onclick={() => adopt(x)}>Take over</button>
+                {:else}
+                  <span class="inline-block max-w-64 text-left text-xs text-zinc-500">{x.reason}</span>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
 {/if}
 
 <Modal title={editing ? `Edit export ${form.pseudo}` : 'Add NFS export'} bind:open={editOpen}>
@@ -193,15 +251,15 @@
     <fieldset>
       <legend class="label">NFS versions</legend>
       <div class="flex gap-5 text-sm">
-        <label class="flex items-center gap-2"><input type="checkbox" class="accent-sky-600" bind:checked={v4} /> NFSv4</label>
-        <label class="flex items-center gap-2"><input type="checkbox" class="accent-sky-600" bind:checked={v3} /> NFSv3</label>
+        <label class="flex items-center gap-2"><input type="checkbox" class="accent-brand-600" bind:checked={v4} /> NFSv4</label>
+        <label class="flex items-center gap-2"><input type="checkbox" class="accent-brand-600" bind:checked={v3} /> NFSv3</label>
       </div>
     </fieldset>
     <div>
       <label class="label" for="n-comment">Comment</label>
       <input id="n-comment" class="input" bind:value={form.comment} placeholder="optional" />
     </div>
-    <div class="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+    <div class="rounded-lg border border-zinc-200 p-3 dark:border-ink-800">
       <Toggle bind:checked={form.enabled} label="Enabled" />
     </div>
     {#if formError}<p class="flex items-center gap-1.5 text-sm text-red-600 dark:text-red-400"><Icon name="alert" size={16} />{formError}</p>{/if}

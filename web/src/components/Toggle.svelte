@@ -15,8 +15,8 @@
     aria-checked={checked}
     aria-label={label}
     onclick={() => (checked = !checked)}
-    class="relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500
-      {checked ? 'bg-sky-600' : 'bg-zinc-300 dark:bg-zinc-700'}"
+    class="relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500
+      {checked ? 'bg-brand-500' : 'bg-zinc-300 dark:bg-ink-700'}"
   >
     <span class="pointer-events-none mt-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform {checked ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
   </button>

@@ -1,86 +1,81 @@
 # Proxmox VE setup
 
-LocoStor runs inside a **privileged** LXC container. The RAID array lives on
-the Proxmox host and is bind-mounted into the container; the disks are passed
-through read-only so `smartctl` can query them.
+LocoStor runs inside a **privileged** Debian or Ubuntu container. The RAID
+array stays on the Proxmox host and is bind-mounted into the container; the
+disks are passed through so `smartctl` can read them.
 
-Replace `105` with your container ID and `/mnt/raid` with your mount point.
+The installer does all of that for you.
 
-## 1. Create the container
+## 1. Create a container
 
-Create a Debian 12 (or newer) container in the Proxmox UI and **untick
-"Unprivileged container"**. 1 CPU core, 512 MB RAM and 4 GB disk are plenty.
+In the Proxmox UI: **Create CT**, use a Debian 12/13 template and **untick
+"Unprivileged container"**. 1 core, 512 MB RAM and 4 GB disk are plenty.
+Nothing else needs to be configured.
 
-## 2. Bind-mount the RAID
+## 2. Run the installer on the host
 
-On the host, the array must be mounted (e.g. `/dev/md0` on `/mnt/raid` via
-`/etc/fstab`). Then:
+Open the shell of the Proxmox **host** (not the container) and run:
 
 ```sh
-pct set 105 -mp0 /mnt/raid,mp=/mnt/raid
+curl -fsSL https://raw.githubusercontent.com/Phydran6/LocoStor/main/scripts/install.sh | sh
 ```
 
-RAID status is read from `/proc/mdstat` and `/sys/block/md*`, which the host
-kernel exposes to the container automatically – nothing else is needed for
-the RAID page.
+It asks for the container ID (or pass it: `… | sh -s -- 105`), then:
 
-## 3. Pass disks through for SMART (optional)
+1. finds the active mdadm arrays, their mount points and member disks,
+2. shows what it is going to change and asks for confirmation,
+3. adds the mount points (`mpN`) and disks (`devN`) to the container,
+4. allows raw disk access for SMART (`lxc.cap.drop` override),
+5. restarts the container and installs LocoStor inside,
+6. asks for the admin password.
 
-Add to `/etc/pve/lxc/105.conf` on the host, one `lxc.mount.entry` per disk:
+Then open `http://<container-ip>:8080`.
+
+Running the installer again is safe: existing settings are kept and
+LocoStor is updated to the latest release.
+
+### Without RAID
+
+If no mounted mdadm array is found, the installer asks for a host path to
+share instead (e.g. `/mnt/data`).
+
+## Existing shares
+
+Shares you set up by hand before – in `smb.conf`, `ganesha.conf` or
+`/etc/exports` – are listed under **Other shares on this system**. Click
+**Take over** to manage one with LocoStor; the original file is backed up as
+`<file>.locostor-<date>` first.
+
+## Manual setup
+
+If you prefer to configure the container yourself, add this to
+`/etc/pve/lxc/<ID>.conf` on the host (Proxmox VE 8.1+):
 
 ```ini
-# SATA / SAS / USB disks (/dev/sdX, block major 8)
-lxc.cgroup2.devices.allow: b 8:* r
-lxc.mount.entry: /dev/sda dev/sda none bind,optional,create=file
-lxc.mount.entry: /dev/sdb dev/sdb none bind,optional,create=file
-
-# SMART pass-through needs CAP_SYS_RAWIO, which Proxmox drops by default.
+mp0: /mnt/raid,mp=/mnt/raid
+dev0: /dev/md0
+dev1: /dev/sda
+dev2: /dev/sdb
 lxc.cap.drop:
 lxc.cap.drop: mac_admin mac_override sys_time sys_module
 ```
 
-For NVMe drives, check the character device major with `ls -l /dev/nvme0`
-(e.g. `crw------- 1 root root 241, 0 …`) and add:
+and run the same one-liner **inside** the container.
 
-```ini
-lxc.cgroup2.devices.allow: c 241:* r
-lxc.mount.entry: /dev/nvme0 dev/nvme0 none bind,optional,create=file
-```
-
-Restart the container (`pct reboot 105`) afterwards.
-
-**USB disks:** most USB-SATA bridges need `-d sat`. LocoStor retries with
-`-d sat` automatically; if a disk still shows no data, pin the type in
-`/etc/locostor/config.json`:
+**USB disks** usually need `-d sat`, which LocoStor tries automatically. You
+can also pin the list in `/etc/locostor/config.json`:
 
 ```json
-"smart_devices": [
-  { "device": "/dev/sda", "type": "sat" },
-  { "device": "/dev/sdb", "type": "sat" }
-]
+"smart_devices": [{ "device": "/dev/sda", "type": "sat" }]
 ```
-
-When `smart_devices` is set, only the listed disks are queried.
-
-## 4. Install LocoStor
-
-Inside the container (`pct enter 105`):
-
-```sh
-apt-get update && apt-get install -y curl
-curl -fsSL https://raw.githubusercontent.com/Phydran6/LocoStor/main/scripts/install.sh | sh
-```
-
-The script installs Samba, NFS-Ganesha and smartmontools, downloads the
-latest release, asks for an admin password and starts the service. Then open
-`http://<container-ip>:8080`.
 
 ## Troubleshooting
 
 | Problem | Fix |
 | --- | --- |
-| `nfs-ganesha` fails to start | Check `journalctl -u nfs-ganesha`. With AppArmor issues add `lxc.apparmor.profile: unconfined` to the container config. |
+| "container is unprivileged" | Create a new container with *Unprivileged container* unticked. |
+| `nfs-ganesha` fails to start | `journalctl -u nfs-ganesha`. With AppArmor errors add `lxc.apparmor.profile: unconfined` to the container config. |
 | NFSv3 clients cannot mount | NFSv3 needs `rpcbind`: `apt-get install rpcbind`. NFSv4 works without it. |
-| SMART shows "Permission denied" | Check the `lxc.cap.drop` lines and the device allow rules above. |
-| Forgot the admin password | `locostor passwd` inside the container. |
-| Logs | `journalctl -u locostor -f` |
+| Disk letters changed after a reboot | Run the installer on the host again. |
+| Forgot the admin password | `pct exec <ID> -- locostor passwd` |
+| Logs | `pct exec <ID> -- journalctl -u locostor -f` |

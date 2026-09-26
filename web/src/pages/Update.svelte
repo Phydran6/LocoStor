@@ -82,8 +82,8 @@
 </PageHeader>
 
 {#if restarting}
-  <div class="fixed inset-0 z-[70] flex flex-col items-center justify-center gap-4 bg-zinc-950/80 text-white backdrop-blur-sm">
-    <span class="h-10 w-10 animate-spin rounded-full border-4 border-white/20 border-t-sky-400"></span>
+  <div class="fixed inset-0 z-[70] flex flex-col items-center justify-center gap-4 bg-ink-950/90 text-white">
+    <span class="h-10 w-10 animate-spin rounded-full border-4 border-white/20 border-t-brand-400"></span>
     <p class="text-lg font-medium">Restarting LocoStor…</p>
     <p class="text-sm text-zinc-400">The page reloads automatically.</p>
   </div>
@@ -113,7 +113,7 @@
       {#if s.disabled_reason}
         <p class="mx-4 mb-4 flex items-start gap-1.5 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"><Icon name="info" size={14} class="mt-px" />{s.disabled_reason}</p>
       {/if}
-      <div class="flex flex-wrap gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+      <div class="flex flex-wrap gap-2 border-t border-zinc-200 px-4 py-3 dark:border-ink-800">
         <button class="btn btn-primary" disabled={!s.can_update || working !== ''} onclick={() => run('update')}>
           <Icon name="download" size={16} />{working === 'update' ? 'Installing…' : 'Install update'}
         </button>
@@ -127,7 +127,7 @@
       <div class="card-header">
         <h2 class="card-title">Release notes {s.latest ? `– ${s.latest}` : ''}</h2>
         {#if s.release_url}
-          <a href={s.release_url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs font-medium text-sky-600 hover:underline dark:text-sky-400">
+          <a href={s.release_url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400">
             GitHub <Icon name="external" size={13} />
           </a>
         {/if}

@@ -67,13 +67,13 @@
 
 {#if !session.ready}
   <div class="flex min-h-screen items-center justify-center">
-    <span class="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-sky-500 dark:border-zinc-700"></span>
+    <span class="h-6 w-6 animate-spin rounded-full border-2 border-zinc-300 border-t-brand-500 dark:border-zinc-700"></span>
   </div>
 {:else if !session.logged_in}
   <Login />
 {:else}
   <Sidebar bind:open={sidebarOpen} {nav} />
-  <div class="flex min-h-screen min-w-0 flex-col lg:pl-64">
+  <div class="flex min-h-screen min-w-0 flex-col lg:pl-60">
     <Topbar title={page.title} onmenu={() => (sidebarOpen = true)} />
     <main class="mx-auto w-full max-w-7xl flex-1 p-4 sm:p-6">
       {#key page.path}

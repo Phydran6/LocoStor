@@ -84,7 +84,7 @@
             </tr>
             {#if expanded[d.device]}
               <tr class="hover:bg-transparent">
-                <td colspan="7" class="bg-zinc-50/70 px-4 py-4 dark:bg-zinc-950/40">
+                <td colspan="7" class="bg-zinc-50/70 px-4 py-4 dark:bg-ink-950/50">
                   <dl class="mb-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
                     <div><dt class="text-xs text-zinc-500">Serial</dt><dd class="mono">{d.serial || '–'}</dd></div>
                     <div><dt class="text-xs text-zinc-500">Firmware</dt><dd class="mono">{d.firmware || '–'}</dd></div>
@@ -106,7 +106,7 @@
                   {/if}
 
                   {#if d.attributes.length}
-                    <div class="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                    <div class="overflow-x-auto rounded-lg border border-zinc-200 dark:border-ink-800">
                       <table class="table">
                         <thead>
                           <tr><th>ID</th><th>Attribute</th><th>Value</th><th>Worst</th><th>Thresh</th><th>Raw</th></tr>

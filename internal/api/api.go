@@ -56,6 +56,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/smb/shares", s.smbSave)
 	api.HandleFunc("PUT /api/smb/shares/{name}", s.smbSave)
 	api.HandleFunc("DELETE /api/smb/shares/{name}", s.smbDelete)
+	api.HandleFunc("GET /api/smb/external", s.smbExternal)
+	api.HandleFunc("POST /api/smb/external/adopt", s.smbAdopt)
 	api.HandleFunc("GET /api/smb/users", s.smbUsers)
 	api.HandleFunc("POST /api/smb/users", s.smbAddUser)
 	api.HandleFunc("PUT /api/smb/users/{name}/password", s.smbSetPassword)
@@ -65,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/nfs/exports", s.nfsSave)
 	api.HandleFunc("PUT /api/nfs/exports/{id}", s.nfsSave)
 	api.HandleFunc("DELETE /api/nfs/exports/{id}", s.nfsDelete)
+	api.HandleFunc("GET /api/nfs/external", s.nfsExternal)
+	api.HandleFunc("POST /api/nfs/external/adopt", s.nfsAdopt)
 
 	api.HandleFunc("GET /api/raid", s.raid)
 	api.HandleFunc("GET /api/smart", s.smart)
@@ -245,15 +249,19 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	shares, _ := s.SMB.Shares()
 	exports, _ := s.NFS.Exports()
+	smbExt, _ := s.SMB.External()
+	nfsExt, _ := s.NFS.External()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"system":      s.SysInfo(),
-		"services":    services,
-		"raid":        arrays,
-		"raid_error":  raidErr,
-		"smb_shares":  len(shares),
-		"nfs_exports": len(exports),
-		"update":      s.Updater.Status(ctx),
-		"version":     s.Version,
+		"system":       s.SysInfo(),
+		"services":     services,
+		"raid":         arrays,
+		"raid_error":   raidErr,
+		"smb_shares":   len(shares),
+		"nfs_exports":  len(exports),
+		"smb_external": len(smbExt),
+		"nfs_external": len(nfsExt),
+		"update":       s.Updater.Status(ctx),
+		"version":      s.Version,
 	})
 }
 
@@ -382,6 +390,58 @@ func (s *Server) nfsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w)
+}
+
+// --- existing shares defined outside LocoStor ---
+
+func (s *Server) smbExternal(w http.ResponseWriter, r *http.Request) {
+	list, err := s.SMB.External()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) smbAdopt(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	sh, err := s.SMB.Adopt(r.Context(), body.Name)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sh)
+}
+
+func (s *Server) nfsExternal(w http.ResponseWriter, r *http.Request) {
+	list, err := s.NFS.External()
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) nfsAdopt(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	e, err := s.NFS.Adopt(r.Context(), body.Key)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
 }
 
 // --- RAID / SMART ---

@@ -46,6 +46,7 @@ type Options struct {
 	StatePath     string
 	IncludePath   string
 	MainConf      string
+	ExportsPath   string // kernel NFS exports, shown so they can be adopted
 	SkipPathCheck bool
 }
 
@@ -67,6 +68,7 @@ func DefaultOptions(dataDir string) Options {
 		StatePath:   filepath.Join(dataDir, "nfs-exports.json"),
 		IncludePath: "/etc/ganesha/locostor.conf",
 		MainConf:    "/etc/ganesha/ganesha.conf",
+		ExportsPath: "/etc/exports",
 	}
 }
 

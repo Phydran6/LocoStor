@@ -1,31 +1,42 @@
-# LocoStor
+<p align="center">
+  <img src="docs/images/logo.png" alt="LocoStor" width="280">
+</p>
 
-Lightweight web UI for storage management inside a privileged Proxmox VE LXC
-container – a single Go binary with an embedded Svelte frontend.
+<p align="center">
+  Storage management for a Proxmox VE container – SMB, NFS, RAID and SMART in one small web UI.
+</p>
+
+![Dashboard](docs/images/dashboard.png)
 
 ## Features
 
 - **SMB shares** – create, edit and remove Samba shares; manage SMB users
 - **NFS exports** – manage NFS-Ganesha exports (NFSv3/v4, client lists, squash)
+- **Existing shares** – shares from `smb.conf`, `ganesha.conf` and `/etc/exports` are detected and can be taken over
 - **RAID status** – read-only view of the host's mdadm arrays incl. rebuild progress
 - **SMART** – disk health via `smartctl`, USB disks via `-d sat`, sleeping disks are not woken up
 - **Self-update** – checks GitHub Releases, one-click update (SHA-256 verified) and rollback
-- Dark mode, responsive layout, password-protected
+- Dark mode, responsive layout, password-protected, single binary without dependencies
 
-LocoStor only touches its own files: shares go to `/etc/samba/locostor.conf`
-and exports to `/etc/ganesha/locostor.conf`, which are included from the main
-configs. Manual settings in `smb.conf` / `ganesha.conf` stay untouched.
+LocoStor writes its shares to `/etc/samba/locostor.conf` and
+`/etc/ganesha/locostor.conf`, which are included from the main configs.
+Everything else in those files stays as it is.
 
 ## Installation
 
-See **[docs/proxmox.md](docs/proxmox.md)** for creating the container, the
-RAID bind mount and disk pass-through. Then, inside the container:
+Create a **privileged** Debian container in Proxmox – no further setup
+needed. Then run this on the Proxmox **host** shell:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Phydran6/LocoStor/main/scripts/install.sh | sh
 ```
 
-Open `http://<container-ip>:8080` and log in with the admin password you set.
+The installer asks for the container ID, mounts the RAID, passes the disks
+through for SMART, installs LocoStor in the container and asks for an admin
+password. Open `http://<container-ip>:8080` afterwards.
+
+Details, manual setup and troubleshooting: **[docs/proxmox.md](docs/proxmox.md)**.
+Run inside a container, the same command installs LocoStor only there.
 
 ## Configuration
 

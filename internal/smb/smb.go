@@ -31,6 +31,14 @@ type Share struct {
 	GuestOK    bool     `json:"guest_ok"`
 	ValidUsers []string `json:"valid_users"`
 	Enabled    bool     `json:"enabled"`
+	// Options are additional smb.conf parameters, rendered verbatim.
+	Options []Option `json:"options"`
+}
+
+// Option is one extra "key = value" share parameter.
+type Option struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // User is a Samba user from the passdb.
@@ -62,7 +70,7 @@ func New(run sysexec.Runner, opts Options) *Manager {
 }
 
 var (
-	shareNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,79}$`)
+	shareNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,78}\$?$`) // trailing $ = hidden share
 	principalRe = regexp.MustCompile(`^[@+&]?[A-Za-z0-9_.\-]{1,64}$`)
 	userNameRe  = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	reserved    = map[string]bool{"global": true, "homes": true, "printers": true, "print$": true, "ipc$": true}
@@ -83,6 +91,9 @@ func (m *Manager) load() ([]Share, error) {
 	for i := range shares {
 		if shares[i].ValidUsers == nil {
 			shares[i].ValidUsers = []string{}
+		}
+		if shares[i].Options == nil {
+			shares[i].Options = []Option{}
 		}
 	}
 	sort.Slice(shares, func(i, j int) bool {
@@ -128,7 +139,7 @@ func (m *Manager) validate(s *Share) error {
 		users = append(users, u)
 	}
 	s.ValidUsers = users
-	return nil
+	return validateOptions(s)
 }
 
 // Save creates (oldName == "") or updates the share oldName and applies the
@@ -210,6 +221,9 @@ func Render(shares []Share) string {
 		fmt.Fprintf(&b, "   guest ok = %s\n", yesno(s.GuestOK))
 		if len(s.ValidUsers) > 0 {
 			fmt.Fprintf(&b, "   valid users = %s\n", strings.Join(s.ValidUsers, " "))
+		}
+		for _, o := range s.Options {
+			fmt.Fprintf(&b, "   %s = %s\n", o.Key, o.Value)
 		}
 		if !s.Enabled {
 			b.WriteString("   available = no\n")

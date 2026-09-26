@@ -85,7 +85,7 @@
           </dl>
         </div>
 
-        <table class="table border-t border-zinc-200 dark:border-zinc-800">
+        <table class="table border-t border-zinc-200 dark:border-ink-800">
           <thead><tr><th>Slot</th><th>Device</th><th>State</th></tr></thead>
           <tbody>
             {#each a.members as m}

@@ -7,7 +7,7 @@
 
 {#if loading}
   <div class="flex items-center justify-center gap-2 px-4 py-12 text-sm text-zinc-500">
-    <span class="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-sky-500 dark:border-zinc-700"></span>
+    <span class="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-brand-500 dark:border-zinc-700"></span>
     Loading…
   </div>
 {:else if error}

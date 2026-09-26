@@ -131,6 +131,56 @@ md1 : active raid5 sde[3] sdd[1] sdc[0]
 unused devices: <none>
 `
 
+const smbConf = `[global]
+   workgroup = WORKGROUP
+   server string = %h server
+   map to guest = bad user
+
+[homes]
+   comment = Home Directories
+   browseable = no
+   read only = yes
+
+[Scans]
+   comment = Scanner inbox
+   path = /mnt/raid/scans
+   writable = yes
+   guest ok = yes
+   force user = nobody
+   create mask = 0664
+`
+
+const ganeshaConf = `NFS_CORE_PARAM {
+    Protocols = 4;
+}
+
+EXPORT {
+    Export_Id = 1;
+    Path = "/mnt/raid/proxmox";
+    Pseudo = "/proxmox";
+    Access_Type = RW;
+    Squash = No_Root_Squash;
+    CLIENT {
+        Clients = 192.168.1.2, 192.168.1.3;
+        Access_Type = RW;
+    }
+    FSAL {
+        Name = VFS;
+    }
+}
+
+EXPORT {
+    Export_Id = 2;
+    Path = "/mnt/raid/iso";
+    Pseudo = "/iso";
+    Access_Type = RO;
+    Attr_Expiration_Time = 60;
+    FSAL {
+        Name = VFS;
+    }
+}
+`
+
 // Env is a prepared demo environment.
 type Env struct {
 	Dir     string
@@ -160,8 +210,21 @@ func Setup() (*Env, error) {
 			StatePath:     filepath.Join(dir, "nfs-exports.json"),
 			IncludePath:   filepath.Join(dir, "ganesha", "locostor.conf"),
 			MainConf:      filepath.Join(dir, "ganesha", "ganesha.conf"),
+			ExportsPath:   filepath.Join(dir, "exports"),
 			SkipPathCheck: true,
 		},
+	}
+	// Hand-written configs, as found on a system set up before LocoStor.
+	existing := map[string]string{
+		e.SMB.MainConf: smbConf,
+		e.NFS.MainConf: ganeshaConf,
+		e.NFS.ExportsPath: "# /etc/exports: the access control list for filesystems\n" +
+			"/mnt/raid/backup 192.168.1.10(rw,sync,no_subtree_check,no_root_squash)\n",
+	}
+	for path, content := range existing {
+		if err := fsutil.WriteFileAtomic(path, []byte(content), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	if err := fsutil.WriteFileAtomic(filepath.Join(e.ProcDir, "mdstat"), []byte(mdstat), 0o644); err != nil {
 		return nil, err

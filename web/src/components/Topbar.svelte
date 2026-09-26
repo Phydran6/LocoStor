@@ -22,14 +22,14 @@
 </script>
 
 <header
-  class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-zinc-200 bg-white/85 px-4 backdrop-blur sm:px-6 dark:border-zinc-800 dark:bg-zinc-900/85"
+  class="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-zinc-200 bg-white/85 px-4 backdrop-blur sm:px-6 dark:border-ink-800 dark:bg-ink-950/90"
 >
   <button class="btn-icon lg:hidden" onclick={onmenu} aria-label="Open menu"><Icon name="menu" /></button>
   <p class="truncate text-sm font-medium text-zinc-500 dark:text-zinc-400">{title}</p>
 
   <div class="ml-auto flex items-center gap-1">
     {#if updates.status?.update_available}
-      <a href="#/update" class="mr-2 hidden items-center gap-1.5 rounded-full bg-sky-600/10 px-3 py-1 text-xs font-medium text-sky-700 hover:bg-sky-600/20 sm:inline-flex dark:text-sky-300">
+      <a href="#/update" class="mr-2 hidden items-center gap-1.5 rounded-full bg-brand-600/10 px-3 py-1 text-xs font-medium text-brand-700 hover:bg-brand-600/20 sm:inline-flex dark:text-brand-300">
         <Icon name="download" size={14} />
         Update {updates.status.latest} available
       </a>
