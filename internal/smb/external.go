@@ -3,7 +3,9 @@ package smb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -44,6 +46,21 @@ var structuredKeys = map[string]bool{
 	"guestok": true, "public": true, "validusers": true, "available": true,
 }
 
+// dangerousOption reports parameters that run programs as root (preexec,
+// *command, *script, magic script ...) or redirect Samba's own files. They
+// are refused so a web login can never be turned into command execution.
+func dangerousOption(n string) bool {
+	if strings.Contains(n, "exec") || strings.HasSuffix(n, "command") || strings.HasSuffix(n, "script") {
+		return true
+	}
+	switch n {
+	case "include", "copy", "magicoutput", "configfile", "lockdirectory", "statedirectory",
+		"cachedirectory", "privatedir", "smbpasswdfile", "passdbbackend", "usernamemap", "logfile":
+		return true
+	}
+	return false
+}
+
 func validateOptions(s *Share) error {
 	opts := make([]Option, 0, len(s.Options))
 	seen := map[string]bool{}
@@ -63,8 +80,8 @@ func validateOptions(s *Share) error {
 		if structuredKeys[n] {
 			return valid.Errorf("option %q is set by the form fields above", o.Key)
 		}
-		if n == "include" || n == "copy" {
-			return valid.Errorf("option %q is not allowed", o.Key)
+		if dangerousOption(n) {
+			return valid.Errorf("option %q is not allowed: it can run commands or change Samba's own files", o.Key)
 		}
 		if seen[n] {
 			return valid.Errorf("option %q is set twice", o.Key)
@@ -115,22 +132,19 @@ func shareFromSection(sec section) Share {
 	return s
 }
 
-// readSections parses a Samba config file and the files it includes.
-// Files in skip (LocoStor's own include) are ignored.
-func readSections(path string, skip map[string]bool, depth int) ([]section, error) {
-	if depth > 5 || skip[path] {
-		return nil, nil
-	}
-	skip[path] = true
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(string(data), "\n")
+// Scan is the result of looking for shares defined outside LocoStor.
+type Scan struct {
+	Shares   []ExternalShare `json:"shares"`
+	Scanned  []string        `json:"scanned"`  // files and sources that were read
+	Warnings []string        `json:"warnings"` // problems that did not stop the scan
+}
+
+// parseSections parses Samba config text. It returns the sections and the
+// include targets (in order).
+func parseSections(data, file string) ([]section, []string) {
+	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
 	var out []section
+	var includes []string
 	var cur *section
 	closeCur := func(end int) {
 		if cur != nil {
@@ -152,7 +166,7 @@ func readSections(path string, skip map[string]bool, depth int) ([]section, erro
 		if line[0] == '[' {
 			closeCur(start)
 			if j := strings.IndexByte(line, ']'); j > 0 {
-				cur = &section{name: strings.TrimSpace(line[1:j]), file: path, start: start}
+				cur = &section{name: strings.TrimSpace(line[1:j]), file: file, start: start}
 			}
 			continue
 		}
@@ -161,12 +175,8 @@ func readSections(path string, skip map[string]bool, depth int) ([]section, erro
 			continue
 		}
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if normKey(key) == "include" && !strings.Contains(value, "%") {
-			inc, err := readSections(value, skip, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, inc...)
+		if normKey(key) == "include" {
+			includes = append(includes, value)
 			continue
 		}
 		if cur != nil {
@@ -174,66 +184,179 @@ func readSections(path string, skip map[string]bool, depth int) ([]section, erro
 		}
 	}
 	closeCur(len(lines))
-	return out, nil
+	return out, includes
 }
 
-func (m *Manager) externalSections() ([]section, error) {
-	return readSections(m.opts.MainConf, map[string]bool{m.opts.IncludePath: true}, 0)
+// readSections parses a Samba config file and the files it includes.
+// Files in skip (LocoStor's own include) are ignored.
+func readSections(path string, skip map[string]bool, depth int, scan *Scan) []section {
+	if depth > 8 || skip[path] {
+		return nil
+	}
+	skip[path] = true
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) || depth == 0 {
+			scan.Warnings = append(scan.Warnings, err.Error())
+		}
+		return nil
+	}
+	scan.Scanned = append(scan.Scanned, path)
+	secs, includes := parseSections(string(data), path)
+	for _, inc := range includes {
+		if strings.Contains(inc, "%") {
+			scan.Warnings = append(scan.Warnings, fmt.Sprintf("%s: include with variables (%s) is not followed", path, inc))
+			continue
+		}
+		if !filepath.IsAbs(inc) {
+			inc = filepath.Join(filepath.Dir(path), inc)
+		}
+		secs = append(secs, readSections(inc, skip, depth+1, scan)...)
+	}
+	return secs
+}
+
+// effectiveSections asks Samba for the configuration it actually uses
+// (testparm), which also covers registry shares and anything the file
+// parser might miss. ok is false if testparm is not available.
+func (m *Manager) effectiveSections(ctx context.Context) (secs []section, ok bool) {
+	out, err := m.run.Run(ctx, "", "testparm", "-s", "--suppress-prompt", m.opts.MainConf)
+	if err != nil && len(out) == 0 {
+		return nil, false
+	}
+	secs, _ = parseSections(string(out), "")
+	for _, s := range secs {
+		if strings.EqualFold(s.name, "global") {
+			return secs, true
+		}
+	}
+	return nil, false // not real testparm output
+}
+
+// userShares lists shares created with "net usershare" (e.g. by desktop
+// file managers). They live outside smb.conf.
+func (m *Manager) userShares(ctx context.Context) []section {
+	out, err := m.run.Run(ctx, "", "net", "usershare", "info")
+	if err != nil {
+		return nil
+	}
+	secs, _ := parseSections(string(out), "")
+	for i := range secs {
+		for j, p := range secs[i].params {
+			switch p.Key {
+			case "guest_ok":
+				secs[i].params[j] = Option{Key: "guest ok", Value: map[string]string{"y": "yes"}[p.Value]}
+			case "usershare_acl":
+				secs[i].params[j].Key = "usershare acl"
+			}
+		}
+	}
+	return secs
+}
+
+func (m *Manager) externalSections() []section {
+	var scan Scan
+	return readSections(m.opts.MainConf, map[string]bool{m.opts.IncludePath: true}, 0, &scan)
 }
 
 // External lists shares defined outside LocoStor.
-func (m *Manager) External() ([]ExternalShare, error) {
+func (m *Manager) External(ctx context.Context) (Scan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	secs, err := m.externalSections()
-	if err != nil {
-		return nil, err
-	}
+	scan := Scan{Shares: []ExternalShare{}, Scanned: []string{}, Warnings: []string{}}
+	fileSecs := readSections(m.opts.MainConf, map[string]bool{m.opts.IncludePath: true}, 0, &scan)
 	managed, err := m.load()
 	if err != nil {
-		return nil, err
+		return scan, err
 	}
-	out := []ExternalShare{}
-	for _, sec := range secs {
-		lower := strings.ToLower(sec.name)
-		if lower == "global" {
-			continue
+	isManaged := map[string]bool{}
+	for _, s := range managed {
+		isManaged[strings.ToLower(s.Name)] = true
+	}
+	inFile := map[string]section{}
+	for _, s := range fileSecs {
+		inFile[strings.ToLower(s.name)] = s
+	}
+
+	// Samba's own view decides what exists; the files tell us where.
+	type found struct {
+		sec    section
+		source string
+	}
+	var list []found
+	seen := map[string]bool{}
+	if eff, ok := m.effectiveSections(ctx); ok {
+		scan.Scanned = append(scan.Scanned, "testparm (effective Samba configuration)")
+		for _, s := range eff {
+			k := strings.ToLower(s.name)
+			if k == "global" || isManaged[k] || seen[k] {
+				continue
+			}
+			seen[k] = true
+			if fs, ok := inFile[k]; ok {
+				list = append(list, found{fs, fs.file})
+			} else {
+				list = append(list, found{s, "Samba registry (net conf)"})
+			}
 		}
-		e := ExternalShare{Share: shareFromSection(sec), Source: sec.file, Adoptable: true}
+	} else {
+		scan.Warnings = append(scan.Warnings, "testparm is not available - only config files were read")
+		for _, s := range fileSecs {
+			k := strings.ToLower(s.name)
+			if k == "global" || isManaged[k] || seen[k] {
+				continue
+			}
+			seen[k] = true
+			list = append(list, found{s, s.file})
+		}
+	}
+	if us := m.userShares(ctx); us != nil {
+		scan.Scanned = append(scan.Scanned, "net usershare")
+		for _, s := range us {
+			k := strings.ToLower(s.name)
+			if !seen[k] && !isManaged[k] {
+				seen[k] = true
+				list = append(list, found{s, "usershare (net usershare)"})
+			}
+		}
+	}
+
+	for _, f := range list {
+		lower := strings.ToLower(f.sec.name)
+		e := ExternalShare{Share: shareFromSection(f.sec), Source: f.source, Adoptable: true}
 		switch {
+		case f.sec.file == "":
+			e.Adoptable, e.Reason = false, "not defined in a config file"
 		case reserved[lower]:
 			e.Adoptable, e.Reason = false, "special Samba section"
-		case !shareNameRe.MatchString(sec.name):
+		case !shareNameRe.MatchString(f.sec.name):
 			e.Adoptable, e.Reason = false, "name contains unsupported characters"
 		case e.Path == "":
 			e.Adoptable, e.Reason = false, "no path set"
 		}
-		for _, s := range managed {
-			if strings.EqualFold(s.Name, sec.name) {
-				e.Adoptable, e.Reason = false, "a LocoStor share has the same name"
-			}
-		}
 		if e.Adoptable {
 			if err := validateOptions(&e.Share); err != nil {
 				e.Adoptable, e.Reason = false, err.Error()
+			} else if err := m.validate(&e.Share); err != nil {
+				e.Adoptable, e.Reason = false, err.Error()
 			}
 		}
-		out = append(out, e)
+		scan.Shares = append(scan.Shares, e)
 	}
-	return out, nil
+	return scan, nil
 }
 
 // Adopt moves an external share into LocoStor: the section is removed from
 // its file (a backup is kept) and recreated in LocoStor's include file.
 func (m *Manager) Adopt(ctx context.Context, name string) (Share, error) {
-	ext, err := m.External()
+	scan, err := m.External(ctx)
 	if err != nil {
 		return Share{}, err
 	}
 	var target *ExternalShare
-	for i := range ext {
-		if strings.EqualFold(ext[i].Name, name) {
-			target = &ext[i]
+	for i := range scan.Shares {
+		if strings.EqualFold(scan.Shares[i].Name, name) {
+			target = &scan.Shares[i]
 		}
 	}
 	if target == nil {
@@ -249,10 +372,7 @@ func (m *Manager) Adopt(ctx context.Context, name string) (Share, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	secs, err := m.externalSections()
-	if err != nil {
-		return s, err
-	}
+	secs := m.externalSections()
 	var sec *section
 	for i := range secs {
 		if strings.EqualFold(secs[i].name, name) {

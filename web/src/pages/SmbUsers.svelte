@@ -121,7 +121,7 @@
     {/if}
     <div>
       <label class="label" for="u-pw">Password</label>
-      <input id="u-pw" class="input" type="password" bind:value={password} required minlength="4" autocomplete="new-password" />
+      <input id="u-pw" class="input" type="password" bind:value={password} required minlength="8" autocomplete="new-password" />
     </div>
     <div>
       <label class="label" for="u-pw2">Repeat password</label>

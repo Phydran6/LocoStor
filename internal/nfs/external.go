@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ type gParser struct {
 	src      string
 	pos      int
 	includes []string
+	dirs     []string // %dir: include every *.conf in the directory
 }
 
 func (p *gParser) skipSpace() {
@@ -88,8 +90,12 @@ func (p *gParser) value() (string, error) {
 			p.pos++
 			items = append(items, strings.TrimSpace(cur.String()))
 			return strings.Join(items, ","), nil
-		case '}', '{':
-			return "", fmt.Errorf("missing ';' before %q", c)
+		case '}':
+			// Tolerate a missing ';' before the closing brace.
+			items = append(items, strings.TrimSpace(cur.String()))
+			return strings.Join(items, ","), nil
+		case '{':
+			return "", fmt.Errorf("unexpected '{' at offset %d", p.pos)
 		case '#':
 			p.skipSpace()
 		default:
@@ -125,8 +131,13 @@ func (p *gParser) blocks(inner bool) ([]gBlock, map[string]string, error) {
 				end = len(p.src) - p.pos
 			}
 			directive := strings.Fields(p.src[p.pos : p.pos+end])
-			if len(directive) == 2 && directive[0] == "%include" {
-				p.includes = append(p.includes, strings.Trim(directive[1], `"`))
+			if len(directive) == 2 {
+				switch directive[0] {
+				case "%include":
+					p.includes = append(p.includes, strings.Trim(directive[1], `"`))
+				case "%dir":
+					p.dirs = append(p.dirs, strings.Trim(directive[1], `"`))
+				}
 			}
 			p.pos += end
 			continue
@@ -273,35 +284,106 @@ func exportFromBlock(b gBlock, defaultProtocols []int) (Export, string) {
 	return e, ""
 }
 
-func (m *Manager) ganeshaExternal(path string, depth int, seen map[string]bool) ([]ExternalExport, error) {
-	if depth > 5 || seen[path] {
-		return nil, nil
+// Scan is the result of looking for exports defined outside LocoStor.
+type Scan struct {
+	Exports  []ExternalExport `json:"exports"`
+	Scanned  []string         `json:"scanned"`
+	Warnings []string         `json:"warnings"`
+}
+
+// topLevelBlocks is the fallback when a file does not parse as a whole: it
+// finds each top-level "NAME { ... }" by brace matching (ignoring comments
+// and strings) and parses the blocks one by one.
+func topLevelBlocks(src string) (blocks []gBlock, broken []string) {
+	depth, start, nameStart := 0, -1, -1
+	for i := 0; i < len(src); i++ {
+		switch c := src[i]; c {
+		case '#':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case '"':
+			if j := strings.IndexByte(src[i+1:], '"'); j >= 0 {
+				i += j + 1
+			}
+		case '{':
+			if depth == 0 {
+				// The block name is the word before the brace.
+				k := i - 1
+				for k >= 0 && (src[k] == ' ' || src[k] == '\t' || src[k] == '\r' || src[k] == '\n') {
+					k--
+				}
+				nameStart = k
+				for nameStart >= 0 && !strings.ContainsRune(" \t\r\n;{}", rune(src[nameStart])) {
+					nameStart--
+				}
+				start = nameStart + 1
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				p := &gParser{src: src[:i+1], pos: start}
+				bs, _, err := p.blocks(false)
+				if err != nil || len(bs) != 1 {
+					broken = append(broken, fmt.Sprintf("block at offset %d: %v", start, err))
+				} else {
+					blocks = append(blocks, bs[0])
+				}
+				start = -1
+			}
+		}
+	}
+	return blocks, broken
+}
+
+func (m *Manager) ganeshaExternal(path string, depth int, seen map[string]bool, scan *Scan) []ExternalExport {
+	if depth > 8 || seen[path] {
+		return nil
 	}
 	seen[path] = true
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, os.ErrNotExist) || depth == 0 {
+			scan.Warnings = append(scan.Warnings, err.Error())
+		}
+		return nil
 	}
+	scan.Scanned = append(scan.Scanned, path)
 	p := &gParser{src: string(data)}
 	blocks, _, err := p.blocks(false)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		var broken []string
+		blocks, broken = topLevelBlocks(string(data))
+		scan.Warnings = append(scan.Warnings, fmt.Sprintf("%s: %v - read block by block instead", path, err))
+		for _, b := range broken {
+			scan.Warnings = append(scan.Warnings, path+": could not read "+b)
+		}
+		// Recover %include / %dir lines too.
+		for _, line := range strings.Split(string(data), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 2 && f[0] == "%include" {
+				p.includes = append(p.includes, strings.Trim(f[1], `"`))
+			} else if len(f) == 2 && f[0] == "%dir" {
+				p.dirs = append(p.dirs, strings.Trim(f[1], `"`))
+			}
+		}
 	}
 	var out []ExternalExport
 	// Exports without Protocols inherit the server-wide setting.
 	protocols := []int{3, 4}
 	for _, b := range blocks {
-		if strings.ToUpper(b.name) == "NFS_CORE_PARAM" {
+		if strings.EqualFold(b.name, "NFS_CORE_PARAM") {
 			if p, ok := normProtocols(b.params["protocols"]); ok {
 				protocols = p
 			}
 		}
 	}
 	for _, b := range blocks {
-		if strings.ToUpper(b.name) != "EXPORT" {
+		if !strings.EqualFold(b.name, "EXPORT") {
 			continue
 		}
 		e, reason := exportFromBlock(b, protocols)
@@ -310,30 +392,36 @@ func (m *Manager) ganeshaExternal(path string, depth int, seen map[string]bool) 
 			Adoptable: reason == "", Reason: reason, file: path, start: b.start, end: b.end,
 		})
 	}
-	for _, inc := range p.includes {
-		more, err := m.ganeshaExternal(inc, depth+1, seen)
-		if err != nil {
-			return nil, err
+	rel := func(f string) string {
+		if filepath.IsAbs(f) {
+			return f
 		}
-		out = append(out, more...)
+		return filepath.Join(filepath.Dir(path), f)
 	}
-	return out, nil
+	for _, inc := range p.includes {
+		out = append(out, m.ganeshaExternal(rel(inc), depth+1, seen, scan)...)
+	}
+	for _, dir := range p.dirs {
+		files, _ := filepath.Glob(filepath.Join(rel(dir), "*.conf"))
+		sort.Strings(files)
+		for _, f := range files {
+			out = append(out, m.ganeshaExternal(f, depth+1, seen, scan)...)
+		}
+	}
+	return out
 }
 
 // --- /etc/exports parser ----------------------------------------------------
 
-func (m *Manager) kernelExternal() ([]ExternalExport, error) {
-	path := m.opts.ExportsPath
-	if path == "" {
-		return nil, nil
-	}
+func (m *Manager) kernelExternal(path string, scan *Scan) []ExternalExport {
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, os.ErrNotExist) {
+			scan.Warnings = append(scan.Warnings, err.Error())
+		}
+		return nil
 	}
+	scan.Scanned = append(scan.Scanned, path)
 	src := string(data)
 	var out []ExternalExport
 	start := 0 // byte offset of the current logical line
@@ -364,11 +452,11 @@ func (m *Manager) kernelExternal() ([]ExternalExport, error) {
 		}
 		e, reason := exportFromKernelLine(fields)
 		out = append(out, ExternalExport{
-			Export: e, Source: path + " (kernel NFS)", Key: fmt.Sprintf("exports:%d", lineStart),
+			Export: e, Source: path + " (kernel NFS)", Key: fmt.Sprintf("exports:%s:%d", path, lineStart),
 			Adoptable: reason == "", Reason: reason, file: path, start: lineStart, end: lineEnd,
 		})
 	}
-	return out, nil
+	return out
 }
 
 func exportFromKernelLine(fields []string) (Export, string) {
@@ -418,19 +506,20 @@ func exportFromKernelLine(fields []string) (Export, string) {
 
 // --- listing and adoption -----------------------------------------------------
 
-func (m *Manager) external() ([]ExternalExport, error) {
-	out, err := m.ganeshaExternal(m.opts.MainConf, 0, map[string]bool{m.opts.IncludePath: true})
-	if err != nil {
-		return nil, err
+func (m *Manager) external() (Scan, error) {
+	scan := Scan{Exports: []ExternalExport{}, Scanned: []string{}, Warnings: []string{}}
+	out := m.ganeshaExternal(m.opts.MainConf, 0, map[string]bool{m.opts.IncludePath: true}, &scan)
+	if m.opts.ExportsPath != "" {
+		out = append(out, m.kernelExternal(m.opts.ExportsPath, &scan)...)
+		files, _ := filepath.Glob(m.opts.ExportsPath + ".d/*.exports")
+		sort.Strings(files)
+		for _, f := range files {
+			out = append(out, m.kernelExternal(f, &scan)...)
+		}
 	}
-	kern, err := m.kernelExternal()
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, kern...)
 	managed, err := m.load()
 	if err != nil {
-		return nil, err
+		return scan, err
 	}
 	for i := range out {
 		e := &out[i]
@@ -449,14 +538,14 @@ func (m *Manager) external() ([]ExternalExport, error) {
 			}
 		}
 	}
-	if out == nil {
-		out = []ExternalExport{}
+	if out != nil {
+		scan.Exports = out
 	}
-	return out, nil
+	return scan, nil
 }
 
 // External lists exports defined outside LocoStor.
-func (m *Manager) External() ([]ExternalExport, error) {
+func (m *Manager) External() (Scan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.external()
@@ -467,14 +556,14 @@ func (m *Manager) External() ([]ExternalExport, error) {
 func (m *Manager) Adopt(ctx context.Context, key string) (Export, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	list, err := m.external()
+	scan, err := m.external()
 	if err != nil {
 		return Export{}, err
 	}
 	var target *ExternalExport
-	for i := range list {
-		if list[i].Key == key {
-			target = &list[i]
+	for i := range scan.Exports {
+		if scan.Exports[i].Key == key {
+			target = &scan.Exports[i]
 		}
 	}
 	if target == nil {

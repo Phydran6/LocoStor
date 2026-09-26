@@ -13,6 +13,7 @@
   import Smart from './pages/Smart.svelte';
   import Update from './pages/Update.svelte';
   import Settings from './pages/Settings.svelte';
+  import About from './pages/About.svelte';
   import { api, session } from './lib/api.svelte.js';
   import { route } from './lib/router.svelte.js';
   import { loadUpdateStatus } from './lib/ui.svelte.js';
@@ -39,6 +40,7 @@
       items: [
         { path: '/update', title: 'Update', icon: 'download', component: Update },
         { path: '/settings', title: 'Settings', icon: 'settings', component: Settings },
+        { path: '/about', title: 'About', icon: 'info', component: About },
       ],
     },
   ];

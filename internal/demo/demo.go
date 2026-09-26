@@ -17,6 +17,9 @@ import (
 	"github.com/Phydran6/LocoStor/internal/sysinfo"
 )
 
+// Username and Password log in to demo mode.
+const Username = "admin"
+
 // Password is the login password in demo mode.
 const Password = "demo"
 

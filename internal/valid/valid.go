@@ -5,7 +5,9 @@ package valid
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -62,4 +64,50 @@ func AbsPath(field, p string) (string, error) {
 		return "", Errorf("%s must be an absolute path", field)
 	}
 	return path.Clean(p), nil
+}
+
+// Directories that must never be shared: the system itself and LocoStor's
+// own state. Sharing them could expose secrets or break the container.
+var forbiddenRoots = []string{
+	"/etc", "/proc", "/sys", "/dev", "/boot", "/root", "/run", "/usr", "/bin", "/sbin",
+	"/lib", "/lib32", "/lib64", "/libx32", "/var/lib/locostor", "/var/lib/samba", "/var/log",
+}
+
+// forbiddenExact may not be shared themselves, but their subdirectories may.
+var forbiddenExact = map[string]bool{"/": true, "/var": true, "/var/lib": true}
+
+func forbidden(p string) bool {
+	if forbiddenExact[p] {
+		return true
+	}
+	for _, root := range forbiddenRoots {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// SharePath validates a directory to be shared over SMB or NFS. With
+// mustExist it must be an existing directory, and symlinks are resolved so
+// they cannot point into a forbidden location.
+func SharePath(field, p string, mustExist bool) (string, error) {
+	p, err := AbsPath(field, p)
+	if err != nil {
+		return "", err
+	}
+	if forbidden(p) {
+		return "", Errorf("%s %s is a system directory and cannot be shared", field, p)
+	}
+	if !mustExist {
+		return p, nil
+	}
+	fi, err := os.Stat(p)
+	if err != nil || !fi.IsDir() {
+		return "", Errorf("%s %s does not exist or is not a directory", field, p)
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil && forbidden(filepath.ToSlash(real)) {
+		return "", Errorf("%s %s points to the system directory %s", field, p, real)
+	}
+	return p, nil
 }

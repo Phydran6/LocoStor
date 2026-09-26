@@ -33,5 +33,8 @@ jobs:
           go vet ./...
           go test ./...
 
+      - name: ShellCheck installer
+        run: shellcheck -s sh -S warning scripts/install.sh
+
       - name: Build
         run: CGO_ENABLED=0 go build -trimpath -o locostor ./cmd/locostor

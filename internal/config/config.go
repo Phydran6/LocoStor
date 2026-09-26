@@ -4,6 +4,7 @@ package config
 import (
 	"sync"
 
+	"github.com/Phydran6/LocoStor/internal/auth"
 	"github.com/Phydran6/LocoStor/internal/fsutil"
 )
 
@@ -16,15 +17,20 @@ type SmartDevice struct {
 	Type   string `json:"type,omitempty"` // smartctl -d value, e.g. "sat"
 }
 
-// Config is the on-disk configuration.
+// Config is the on-disk configuration. It holds secrets and is written
+// with mode 0600.
 type Config struct {
-	Listen       string        `json:"listen"`
-	PasswordHash string        `json:"password_hash,omitempty"`
-	UpdateRepo   string        `json:"update_repo"`
-	DataDir      string        `json:"data_dir"`
-	TLSCert      string        `json:"tls_cert,omitempty"`
-	TLSKey       string        `json:"tls_key,omitempty"`
-	SmartDevices []SmartDevice `json:"smart_devices,omitempty"`
+	Listen        string        `json:"listen"`
+	Username      string        `json:"username"`
+	PasswordHash  string        `json:"password_hash,omitempty"`
+	TOTPSecret    string        `json:"totp_secret,omitempty"`
+	RecoveryCodes []string      `json:"recovery_codes,omitempty"`
+	UpdateRepo    string        `json:"update_repo"`
+	DataDir       string        `json:"data_dir"`
+	TLSCert       string        `json:"tls_cert,omitempty"`
+	TLSKey        string        `json:"tls_key,omitempty"`
+	HTTPRedirect  []string      `json:"http_redirect,omitempty"` // plain HTTP addresses redirecting to HTTPS
+	SmartDevices  []SmartDevice `json:"smart_devices,omitempty"`
 
 	path string
 	mu   sync.Mutex
@@ -39,6 +45,9 @@ func Load(path string) (*Config, error) {
 	if c.Listen == "" {
 		c.Listen = ":8080"
 	}
+	if c.Username == "" {
+		c.Username = "admin"
+	}
 	if c.UpdateRepo == "" {
 		c.UpdateRepo = "Phydran6/LocoStor"
 	}
@@ -51,17 +60,31 @@ func Load(path string) (*Config, error) {
 // Path returns the file the config was loaded from.
 func (c *Config) Path() string { return c.path }
 
-// GetPasswordHash returns the current admin password hash.
-func (c *Config) GetPasswordHash() string {
+// Update changes the config under its lock and saves it.
+func (c *Config) Update(fn func(*Config)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.PasswordHash
+	fn(c)
+	return fsutil.WriteJSON(c.path, c, 0o600)
 }
 
-// SetPasswordHash updates the admin password hash and persists the config.
-func (c *Config) SetPasswordHash(hash string) error {
+// Credentials implements auth.Store.
+func (c *Config) Credentials() auth.Credentials {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.PasswordHash = hash
-	return fsutil.WriteJSON(c.path, c, 0o600)
+	return auth.Credentials{
+		Username:      c.Username,
+		PasswordHash:  c.PasswordHash,
+		TOTPSecret:    c.TOTPSecret,
+		RecoveryCodes: append([]string(nil), c.RecoveryCodes...),
+	}
+}
+
+// UpdateCredentials implements auth.Store.
+func (c *Config) UpdateCredentials(fn func(*auth.Credentials)) error {
+	return c.Update(func(c *Config) {
+		cr := auth.Credentials{Username: c.Username, PasswordHash: c.PasswordHash, TOTPSecret: c.TOTPSecret, RecoveryCodes: c.RecoveryCodes}
+		fn(&cr)
+		c.Username, c.PasswordHash, c.TOTPSecret, c.RecoveryCodes = cr.Username, cr.PasswordHash, cr.TOTPSecret, cr.RecoveryCodes
+	})
 }

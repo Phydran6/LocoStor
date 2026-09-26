@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -106,6 +107,11 @@ func (m *Manager) Disks(ctx context.Context, refresh bool) ([]Disk, time.Time, e
 
 func (m *Manager) scan(ctx context.Context) ([]config.SmartDevice, error) {
 	if len(m.overrides) > 0 {
+		for _, d := range m.overrides {
+			if !validDevice(d.Device, d.Type) {
+				return nil, fmt.Errorf("invalid smart_devices entry %q / %q in config", d.Device, d.Type)
+			}
+		}
 		return m.overrides, nil
 	}
 	out, err := m.run.Run(ctx, "", "smartctl", "--scan-open", "-j")
@@ -124,7 +130,7 @@ func (m *Manager) scan(ctx context.Context) ([]config.SmartDevice, error) {
 	devs := []config.SmartDevice{}
 	seen := map[string]bool{}
 	for _, d := range res.Devices {
-		if seen[d.Name] {
+		if seen[d.Name] || !validDevice(d.Name, d.Type) {
 			continue
 		}
 		seen[d.Name] = true
@@ -300,6 +306,16 @@ func Convert(dev, typ string, raw *rawOutput) Disk {
 		d.Health = "ok"
 	}
 	return d
+}
+
+var (
+	deviceRe = regexp.MustCompile(`^/dev/[A-Za-z0-9._/-]+$`)
+	typeRe   = regexp.MustCompile(`^[A-Za-z0-9,_+-]*$`)
+)
+
+// validDevice guards the arguments passed to smartctl.
+func validDevice(dev, typ string) bool {
+	return deviceRe.MatchString(dev) && !strings.Contains(dev, "..") && typeRe.MatchString(typ)
 }
 
 func gt0(v *int64) bool { return v != nil && *v > 0 }

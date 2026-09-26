@@ -113,17 +113,11 @@ func (m *Manager) validate(s *Share) error {
 	if reserved[strings.ToLower(s.Name)] {
 		return valid.Errorf("share name %q is reserved", s.Name)
 	}
-	p, err := valid.AbsPath("path", s.Path)
+	p, err := valid.SharePath("path", s.Path, !m.opts.SkipPathCheck)
 	if err != nil {
 		return err
 	}
 	s.Path = p
-	if !m.opts.SkipPathCheck {
-		fi, err := os.Stat(p)
-		if err != nil || !fi.IsDir() {
-			return valid.Errorf("path %s does not exist or is not a directory", p)
-		}
-	}
 	if err := valid.SingleLine("comment", s.Comment); err != nil {
 		return err
 	}
@@ -319,8 +313,8 @@ func (m *Manager) Users(ctx context.Context) ([]User, error) {
 }
 
 func checkPassword(pw string) error {
-	if len(pw) < 4 {
-		return valid.Errorf("password must be at least 4 characters")
+	if len(pw) < 8 || len(pw) > 127 {
+		return valid.Errorf("password must be 8 to 127 characters")
 	}
 	if strings.ContainsAny(pw, "\r\n\x00") {
 		return valid.Errorf("password must not contain line breaks")

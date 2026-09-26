@@ -20,16 +20,18 @@ Open the shell of the Proxmox **host** (not the container) and run:
 curl -fsSL https://raw.githubusercontent.com/Phydran6/LocoStor/main/scripts/install.sh | sh
 ```
 
-It asks for the container ID (or pass it: `… | sh -s -- 105`), then:
+It asks for the container ID (or pass it: `… | sh -s -- 105`) and how the web
+UI should be reached (see [HTTPS](../README.md#https); after 10 seconds it
+continues with plain HTTP on port 8080), then:
 
 1. finds the active mdadm arrays, their mount points and member disks,
 2. shows what it is going to change and asks for confirmation,
 3. adds the mount points (`mpN`) and disks (`devN`) to the container,
 4. allows raw disk access for SMART (`lxc.cap.drop` override),
 5. restarts the container and installs LocoStor inside,
-6. asks for the admin password.
+6. asks for the admin username and password.
 
-Then open `http://<container-ip>:8080`.
+At the end it prints the address to open.
 
 Running the installer again is safe: existing settings are kept and
 LocoStor is updated to the latest release.
@@ -41,10 +43,18 @@ share instead (e.g. `/mnt/data`).
 
 ## Existing shares
 
-Shares you set up by hand before – in `smb.conf`, `ganesha.conf` or
-`/etc/exports` – are listed under **Other shares on this system**. Click
-**Take over** to manage one with LocoStor; the original file is backed up as
-`<file>.locostor-<date>` first.
+Shares you set up before LocoStor are listed under **Other shares on this
+system**. For SMB, LocoStor asks Samba itself (`testparm`) which shares are
+active, so shares from includes, the registry and `net usershare` show up
+too. For NFS it reads `ganesha.conf` with its `%include`/`%dir` files,
+`/etc/exports` and `/etc/exports.d/*.exports`. The list shows which sources
+were read and any problems it found.
+
+Click **Take over** to manage one with LocoStor; the original file is backed
+up as `<file>.locostor-<date>` first.
+
+Shares on the **Proxmox host itself** are not visible from inside the
+container.
 
 ## Manual setup
 
@@ -78,4 +88,6 @@ can also pin the list in `/etc/locostor/config.json`:
 | NFSv3 clients cannot mount | NFSv3 needs `rpcbind`: `apt-get install rpcbind`. NFSv4 works without it. |
 | Disk letters changed after a reboot | Run the installer on the host again. |
 | Forgot the admin password | `pct exec <ID> -- locostor passwd` |
+| Lost the authenticator app | Use a recovery code, or `pct exec <ID> -- locostor mfa-reset` |
+| Nginx Proxy Manager does not start | Docker needs nesting: `pct set <ID> -features nesting=1`, restart the container. |
 | Logs | `pct exec <ID> -- journalctl -u locostor -f` |

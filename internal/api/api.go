@@ -4,10 +4,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -27,6 +27,7 @@ import (
 type Server struct {
 	Version string
 	Demo    bool
+	Repo    string // GitHub owner/name, for links in the UI
 	Auth    *auth.Manager
 	SMB     *smb.Manager
 	NFS     *nfs.Manager
@@ -42,15 +43,23 @@ type Server struct {
 
 // Handler returns the root HTTP handler.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("POST /api/auth/login", s.login)
-	mux.HandleFunc("POST /api/auth/logout", s.logout)
-	mux.HandleFunc("GET /api/auth/me", s.me)
+	// Endpoints that work without a session.
+	public := http.NewServeMux()
+	public.HandleFunc("POST /api/auth/login", s.login)
+	public.HandleFunc("POST /api/auth/mfa", s.loginMFA)
+	public.HandleFunc("POST /api/auth/logout", s.logout)
+	public.HandleFunc("GET /api/auth/me", s.me)
 
 	api := http.NewServeMux()
+	api.HandleFunc("GET /api/auth/account", s.account)
 	api.HandleFunc("POST /api/auth/password", s.changePassword)
+	api.HandleFunc("POST /api/auth/username", s.changeUsername)
+	api.HandleFunc("POST /api/auth/totp/setup", s.totpSetup)
+	api.HandleFunc("POST /api/auth/totp/enable", s.totpEnable)
+	api.HandleFunc("POST /api/auth/totp/disable", s.totpDisable)
+	api.HandleFunc("POST /api/auth/recovery", s.recoveryRegenerate)
 	api.HandleFunc("GET /api/dashboard", s.dashboard)
+	api.HandleFunc("GET /api/about", s.about)
 
 	api.HandleFunc("GET /api/smb/shares", s.smbShares)
 	api.HandleFunc("POST /api/smb/shares", s.smbSave)
@@ -77,20 +86,74 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/update/check", s.updateCheck)
 	api.HandleFunc("POST /api/update/apply", s.updateApply)
 	api.HandleFunc("POST /api/update/rollback", s.updateRollback)
+	api.HandleFunc("GET /api/update/progress", s.updateProgress)
 
-	mux.Handle("/api/", s.requireAuth(api))
+	public.Handle("/api/", s.requireAuth(api))
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", apiGuard(public))
 	mux.Handle("/", s.static())
 	return securityHeaders(mux)
 }
 
+const csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
+	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "same-origin")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Cross-Origin-Resource-Policy", "same-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		if r.TLS != nil {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// apiGuard applies to every /api/ request: responses are never cached and
+// state-changing requests must be same-origin JSON. Browsers cannot send a
+// custom header or a JSON content type cross-site without a CORS preflight,
+// which this server never answers - so this blocks CSRF.
+func apiGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if r.Header.Get("X-Requested-With") != "LocoStor" {
+				writeError(w, http.StatusForbidden, "missing X-Requested-With header")
+				return
+			}
+			if r.ContentLength != 0 && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+				writeError(w, http.StatusUnsupportedMediaType, "expected application/json")
+				return
+			}
+			if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, r) {
+				writeError(w, http.StatusForbidden, "cross-origin request rejected")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameOrigin compares the Origin header with the requested host. Behind a
+// reverse proxy the Host header is the public name, so this still matches.
+func sameOrigin(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := r.Host
+	if fh := r.Header.Get("X-Forwarded-Host"); fh != "" {
+		host = fh
+	}
+	return strings.EqualFold(u.Host, host)
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -99,18 +162,6 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "not logged in")
 			return
 		}
-		// Mutating requests must be JSON: browsers cannot send that
-		// cross-site without a CORS preflight, which we never allow.
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if r.ContentLength != 0 && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-				writeError(w, http.StatusUnsupportedMediaType, "expected application/json")
-				return
-			}
-			if r.Header.Get("X-Requested-With") != "LocoStor" {
-				writeError(w, http.StatusForbidden, "missing X-Requested-With header")
-				return
-			}
-		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -118,14 +169,20 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 func (s *Server) static() http.Handler {
 	files := http.FileServer(http.FS(s.Web))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if p == "" {
 			p = "index.html"
 		}
-		if _, err := fs.Stat(s.Web, p); err != nil {
+		if fi, err := fs.Stat(s.Web, p); err != nil || fi.IsDir() {
 			// Unknown path: serve the SPA shell.
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
+			p = "index.html"
 		}
 		if strings.HasPrefix(p, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -169,67 +226,6 @@ func decode(r *http.Request, v any) error {
 
 func ok(w http.ResponseWriter) { writeJSON(w, http.StatusOK, map[string]bool{"ok": true}) }
 
-// --- auth ---
-
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Password string `json:"password"`
-	}
-	if err := decode(r, &body); err != nil {
-		fail(w, err)
-		return
-	}
-	token, err := s.Auth.Login(body.Password)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
-		return
-	}
-	auth.SetCookie(w, r, token)
-	s.writeMe(w, true)
-}
-
-func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	s.Auth.Logout(auth.Token(r))
-	auth.ClearCookie(w)
-	ok(w)
-}
-
-func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	s.writeMe(w, s.Auth.Valid(auth.Token(r)))
-}
-
-func (s *Server) writeMe(w http.ResponseWriter, loggedIn bool) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"logged_in": loggedIn,
-		"version":   s.Version,
-		"demo":      s.Demo,
-	})
-}
-
-func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Current string `json:"current"`
-		New     string `json:"new"`
-	}
-	if err := decode(r, &body); err != nil {
-		fail(w, err)
-		return
-	}
-	if s.Demo {
-		fail(w, valid.Errorf("password cannot be changed in demo mode"))
-		return
-	}
-	if err := s.Auth.ChangePassword(auth.Token(r), body.Current, body.New); err != nil {
-		if errors.Is(err, auth.ErrInvalid) {
-			fail(w, valid.Errorf("current password is wrong"))
-			return
-		}
-		fail(w, valid.Errorf("%s", err.Error()))
-		return
-	}
-	ok(w)
-}
-
 // --- dashboard ---
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -249,7 +245,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	shares, _ := s.SMB.Shares()
 	exports, _ := s.NFS.Exports()
-	smbExt, _ := s.SMB.External()
+	smbExt, _ := s.SMB.External(ctx)
 	nfsExt, _ := s.NFS.External()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"system":       s.SysInfo(),
@@ -258,8 +254,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"raid_error":   raidErr,
 		"smb_shares":   len(shares),
 		"nfs_exports":  len(exports),
-		"smb_external": len(smbExt),
-		"nfs_external": len(nfsExt),
+		"smb_external": len(smbExt.Shares),
+		"nfs_external": len(nfsExt.Exports),
 		"update":       s.Updater.Status(ctx),
 		"version":      s.Version,
 	})
@@ -395,7 +391,7 @@ func (s *Server) nfsDelete(w http.ResponseWriter, r *http.Request) {
 // --- existing shares defined outside LocoStor ---
 
 func (s *Server) smbExternal(w http.ResponseWriter, r *http.Request) {
-	list, err := s.SMB.External()
+	list, err := s.SMB.External(r.Context())
 	if err != nil {
 		fail(w, err)
 		return
@@ -475,20 +471,28 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
-	// Downloads may outlive a closed browser tab, so detach from the request.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
-	defer cancel()
-	if err := s.Updater.Apply(ctx); err != nil {
+	if err := s.Updater.StartUpdate(); err != nil {
 		fail(w, valid.Errorf("%s", err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restarting": true})
+	writeJSON(w, http.StatusAccepted, s.Updater.Progress())
 }
 
 func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
-	if err := s.Updater.Rollback(r.Context()); err != nil {
+	if err := s.Updater.StartRollback(); err != nil {
 		fail(w, valid.Errorf("%s", err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restarting": true})
+	writeJSON(w, http.StatusAccepted, s.Updater.Progress())
+}
+
+func (s *Server) updateProgress(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Updater.Progress())
+}
+
+func (s *Server) about(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version": s.Version,
+		"repo":    "https://github.com/" + s.Repo,
+	})
 }

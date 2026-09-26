@@ -106,17 +106,11 @@ func (m *Manager) load() ([]Export, error) {
 }
 
 func (m *Manager) validate(e *Export) error {
-	p, err := valid.AbsPath("path", e.Path)
+	p, err := valid.SharePath("path", e.Path, !m.opts.SkipPathCheck)
 	if err != nil {
 		return err
 	}
 	e.Path = p
-	if !m.opts.SkipPathCheck {
-		fi, err := os.Stat(p)
-		if err != nil || !fi.IsDir() {
-			return valid.Errorf("path %s does not exist or is not a directory", p)
-		}
-	}
 	if strings.TrimSpace(e.Pseudo) == "" {
 		e.Pseudo = p
 	}

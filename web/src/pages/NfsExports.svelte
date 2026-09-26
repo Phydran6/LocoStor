@@ -11,6 +11,7 @@
 
   let exports = $state(null);
   let external = $state([]);
+  let scan = $state(null);
   let error = $state('');
 
   let editOpen = $state(false);
@@ -27,7 +28,8 @@
 
   async function load() {
     try {
-      [exports, external] = await Promise.all([api.get('/api/nfs/exports'), api.get('/api/nfs/external')]);
+      [exports, scan] = await Promise.all([api.get('/api/nfs/exports'), api.get('/api/nfs/external')]);
+      external = scan.exports;
       error = '';
     } catch (e) {
       error = e.message;
@@ -214,6 +216,18 @@
       </table>
     </div>
   </section>
+{/if}
+
+{#if scan}
+  <details class="mt-3 text-xs text-zinc-500">
+    <summary class="cursor-pointer select-none hover:text-zinc-700 dark:hover:text-zinc-300">
+      Searched {scan.scanned.length} {scan.scanned.length === 1 ? 'source' : 'sources'} for existing exports{#if scan.warnings.length}<span class="ml-1 text-amber-600 dark:text-amber-400">· {scan.warnings.length} {scan.warnings.length === 1 ? 'warning' : 'warnings'}</span>{/if}
+    </summary>
+    <ul class="mono mt-2 space-y-0.5 pl-4">
+      {#each scan.scanned as src}<li>{src}</li>{/each}
+      {#each scan.warnings as w}<li class="text-amber-600 dark:text-amber-400">{w}</li>{/each}
+    </ul>
+  </details>
 {/if}
 
 <Modal title={editing ? `Edit export ${form.pseudo}` : 'Add NFS export'} bind:open={editOpen}>

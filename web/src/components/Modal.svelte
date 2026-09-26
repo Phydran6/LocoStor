@@ -1,10 +1,11 @@
 <script>
   import Icon from './Icon.svelte';
 
-  let { title, open = $bindable(false), wide = false, children, footer } = $props();
+  let { title, open = $bindable(false), wide = false, onclose, children, footer } = $props();
 
   function close() {
     open = false;
+    onclose?.();
   }
   function onkeydown(e) {
     if (open && e.key === 'Escape') close();

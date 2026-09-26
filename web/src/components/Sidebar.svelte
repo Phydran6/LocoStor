@@ -1,5 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
+  import mark from '../assets/favicon.svg';
   import { route } from '../lib/router.svelte.js';
   import { session } from '../lib/api.svelte.js';
   import { updates } from '../lib/ui.svelte.js';
@@ -22,7 +23,7 @@
     lg:translate-x-0 {open ? 'translate-x-0' : '-translate-x-full'}"
 >
   <div class="flex h-14 items-center gap-2.5 border-b border-ink-800 px-4">
-    <img src="/favicon.svg" alt="" class="h-8 w-8" />
+    <img src={mark} alt="" class="h-8 w-8" />
     <span class="text-[15px] font-semibold tracking-tight text-brand-300">LocoStor</span>
     <button class="btn-icon ml-auto text-zinc-400 hover:bg-ink-800 lg:hidden" onclick={() => (open = false)} aria-label="Close menu">
       <Icon name="x" />
@@ -54,8 +55,16 @@
     {/each}
   </nav>
 
-  <div class="border-t border-ink-800 px-4 py-3 text-xs text-zinc-500">
-    Version <span class="mono text-zinc-400">{session.version}</span>
-    {#if session.demo}<span class="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-400">demo</span>{/if}
+  <div class="flex items-center gap-2 border-t border-ink-800 px-4 py-3 text-xs text-zinc-500">
+    <span>Version <span class="mono text-zinc-400">{session.version}</span></span>
+    {#if session.demo}<span class="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-400">demo</span>{/if}
+    <a
+      href="https://github.com/Phydran6/LocoStor"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="ml-auto rounded p-1 text-zinc-500 hover:bg-ink-800 hover:text-brand-300"
+      title="LocoStor on GitHub"
+      aria-label="LocoStor on GitHub"><Icon name="github" size={16} /></a
+    >
   </div>
 </aside>

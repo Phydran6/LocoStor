@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-26
+
+### Added
+
+- Login with username and password
+- Two-factor login with authenticator apps (TOTP) and ten single-use recovery codes
+- Settings: change username, set up / turn off two-factor login, new recovery codes
+- `locostor passwd -user NAME`, `locostor mfa-reset` and `locostor tls self-signed|files|off`
+- Installer asks how the web UI is reached (continues with HTTP on 8080 after 10 seconds): plain HTTP for an external reverse proxy, built-in HTTPS with a self-signed or own certificate, Caddy, or Nginx Proxy Manager in the container
+- Built-in HTTPS with redirect from ports 80 and 8080
+- Live update progress: steps, download progress and log; the page reloads once the new version runs
+- About page with links to the repository, documentation, changelog, releases and issues
+- SECURITY.md
+
+### Changed
+
+- Detection of existing SMB shares asks Samba (`testparm`), so shares from includes, the registry and `net usershare` are found; NFS detection reads `%dir`, relative `%include`, `/etc/exports.d` and no longer gives up on a file with a syntax error
+- Share pages show which sources were searched and any problems found
+- Sessions survive restarts, so an update no longer logs you out
+- Logo and icons get versioned file names, so browsers never show stale ones
+- SMB user passwords need at least 8 characters
+
+### Security
+
+- Brute-force protection per client and globally; timing-safe login checks
+- Session tokens stored hashed; cookies `Secure` behind HTTPS proxies
+- Content-Security-Policy, HSTS (with HTTPS), COOP/CORP, Permissions-Policy, `no-store` for API responses
+- CSRF protection extended to the login and checked against the `Origin` header
+- Shares may no longer point at system directories (`/`, `/etc`, `/root`, `/proc`, …), also via symlinks
+- smb.conf options that run commands (`preexec`, `* command`, `* script`, `magic script`, …) are refused
+- smartctl device names are validated; update downloads are size-limited
+- HTTP server timeouts; TLS 1.2 minimum
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
@@ -38,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer script, systemd unit and Proxmox setup guide
 - GitHub Actions for CI and releases (linux/amd64, linux/arm64)
 
-[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Phydran6/LocoStor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Phydran6/LocoStor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Phydran6/LocoStor/releases/tag/v0.1.0

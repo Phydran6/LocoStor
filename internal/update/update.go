@@ -10,8 +10,6 @@ package update
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Phydran6/LocoStor/internal/sysexec"
@@ -52,6 +51,7 @@ type release struct {
 	Assets      []struct {
 		Name string `json:"name"`
 		URL  string `json:"browser_download_url"`
+		Size int64  `json:"size"`
 	} `json:"assets"`
 }
 
@@ -64,6 +64,10 @@ type Options struct {
 	// Restart is called after a successful swap to restart the service.
 	Restart func()
 	Run     sysexec.Runner
+	// APIBase overrides https://api.github.com (tests).
+	APIBase string
+	// Exe overrides the path of the running binary (tests).
+	Exe string
 }
 
 // Updater checks for and applies updates.
@@ -79,6 +83,9 @@ type Updater struct {
 
 	prevMod     time.Time
 	prevVersion string
+
+	progress Progress
+	bytes    atomic.Int64
 }
 
 // New creates an Updater.
@@ -88,6 +95,9 @@ func New(opts Options) *Updater {
 		if r, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = r
 		}
+	}
+	if opts.Exe != "" {
+		exe = opts.Exe
 	}
 	u := &Updater{opts: opts, client: &http.Client{Timeout: 5 * time.Minute}, exe: exe}
 	u.status = Status{Current: opts.Current}
@@ -143,7 +153,7 @@ func (u *Updater) disabledReason() string {
 	switch {
 	case u.opts.Disabled != "":
 		return u.opts.Disabled
-	case runtime.GOOS != "linux":
+	case runtime.GOOS != "linux" && u.opts.Exe == "":
 		return "self-update is only supported on Linux"
 	case !parseSemver(u.opts.Current).ok:
 		return "development build - self-update disabled"
@@ -218,7 +228,7 @@ func (u *Updater) get(ctx context.Context, url string) (*http.Response, error) {
 func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	resp, err := u.get(ctx, "https://api.github.com/repos/"+u.opts.Repo+"/releases/latest")
+	resp, err := u.get(ctx, u.apiBase()+"/repos/"+u.opts.Repo+"/releases/latest")
 	if err != nil {
 		if strings.Contains(err.Error(), "404") {
 			return nil, errors.New("no releases published yet")
@@ -231,134 +241,6 @@ func (u *Updater) fetchLatest(ctx context.Context) (*release, error) {
 		return nil, err
 	}
 	return &rel, nil
-}
-
-func (u *Updater) lock() error {
-	if r := u.disabledReason(); r != "" {
-		return errors.New(r)
-	}
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.busy {
-		return errors.New("an update operation is already running")
-	}
-	u.busy = true
-	return nil
-}
-
-func (u *Updater) unlock() {
-	u.mu.Lock()
-	u.busy = false
-	u.mu.Unlock()
-}
-
-// Apply downloads and installs the latest release, then restarts.
-func (u *Updater) Apply(ctx context.Context) error {
-	if err := u.lock(); err != nil {
-		return err
-	}
-	defer u.unlock()
-
-	rel, err := u.fetchLatest(ctx)
-	if err != nil {
-		return err
-	}
-	if !Newer(rel.TagName, u.opts.Current) {
-		return fmt.Errorf("already up to date (%s)", u.opts.Current)
-	}
-	var binURL, sumsURL string
-	for _, a := range rel.Assets {
-		switch a.Name {
-		case AssetName():
-			binURL = a.URL
-		case "SHA256SUMS":
-			sumsURL = a.URL
-		}
-	}
-	if binURL == "" || sumsURL == "" {
-		return fmt.Errorf("release %s has no %s or SHA256SUMS asset", rel.TagName, AssetName())
-	}
-	want, err := u.expectedSum(ctx, sumsURL)
-	if err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(u.exe)
-	tmp, err := os.CreateTemp(dir, ".locostor-update-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	resp, err := u.get(ctx, binURL)
-	if err != nil {
-		tmp.Close()
-		return err
-	}
-	h := sha256.New()
-	_, err = io.Copy(io.MultiWriter(tmp, h), resp.Body)
-	resp.Body.Close()
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return fmt.Errorf("download: %w", err)
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		return fmt.Errorf("checksum mismatch: got %s, want %s", got, want)
-	}
-	if err := os.Chmod(tmpName, 0o755); err != nil {
-		return err
-	}
-	if v := u.binaryVersion(ctx, tmpName); v != strings.TrimPrefix(rel.TagName, "v") {
-		return fmt.Errorf("downloaded binary reports version %q, expected %s", v, rel.TagName)
-	}
-
-	// Keep the running binary for rollback, then move the new one in.
-	if err := copyFile(u.exe, u.previousPath()); err != nil {
-		return fmt.Errorf("backup current binary: %w", err)
-	}
-	if err := os.Rename(tmpName, u.exe); err != nil {
-		return fmt.Errorf("install new binary: %w", err)
-	}
-	log.Printf("updated %s -> %s, restarting", u.opts.Current, rel.TagName)
-	u.restartSoon()
-	return nil
-}
-
-// Rollback swaps the current and previous binary, then restarts.
-func (u *Updater) Rollback(ctx context.Context) error {
-	if err := u.lock(); err != nil {
-		return err
-	}
-	defer u.unlock()
-	prev := u.previousPath()
-	if _, err := os.Stat(prev); err != nil {
-		return errors.New("no previous version available")
-	}
-	swap := u.exe + ".swap"
-	if err := os.Rename(u.exe, swap); err != nil {
-		return err
-	}
-	if err := os.Rename(prev, u.exe); err != nil {
-		_ = os.Rename(swap, u.exe)
-		return err
-	}
-	if err := os.Rename(swap, prev); err != nil {
-		return err
-	}
-	log.Printf("rolled back from %s, restarting", u.opts.Current)
-	u.restartSoon()
-	return nil
-}
-
-func (u *Updater) restartSoon() {
-	if u.opts.Restart == nil {
-		return
-	}
-	// Give the HTTP response time to reach the browser.
-	time.AfterFunc(500*time.Millisecond, u.opts.Restart)
 }
 
 func (u *Updater) expectedSum(ctx context.Context, url string) (string, error) {
@@ -398,4 +280,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+func (u *Updater) apiBase() string {
+	if u.opts.APIBase != "" {
+		return u.opts.APIBase
+	}
+	return "https://api.github.com"
 }

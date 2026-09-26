@@ -29,7 +29,8 @@ func TestExternalAndAdopt(t *testing.T) {
 	if err := os.WriteFile(opts.MainConf, []byte(handWritten), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ext, err := m.External()
+	scan, err := m.External(context.Background())
+	ext := scan.Shares
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,8 @@ func TestExternalAndAdopt(t *testing.T) {
 	if len(backups) != 1 {
 		t.Errorf("want one backup, got %v", backups)
 	}
-	ext, _ = m.External()
+	scan, _ = m.External(context.Background())
+	ext = scan.Shares
 	if len(ext) != 2 {
 		t.Errorf("Scans still listed as external: %+v", ext)
 	}
@@ -76,6 +78,9 @@ func TestOptionValidation(t *testing.T) {
 		{{Key: "path", Value: "/x"}},
 		{{Key: "Read Only", Value: "no"}},
 		{{Key: "include", Value: "/etc/passwd"}},
+		{{Key: "root preexec", Value: "rm -rf /"}},
+		{{Key: "Magic_Script", Value: "x.sh"}},
+		{{Key: "print command", Value: "id"}},
 		{{Key: "force user", Value: "a\nb"}},
 		{{Key: "force user", Value: "a"}, {Key: "Force_User", Value: "b"}},
 	} {
@@ -83,5 +88,39 @@ func TestOptionValidation(t *testing.T) {
 		if err := validateOptions(&s); err == nil {
 			t.Errorf("options %+v accepted", opts)
 		}
+	}
+}
+
+// testparmRunner answers testparm like real Samba would, including a share
+// that only exists in the registry.
+type testparmRunner struct{ fakeRunner }
+
+func (r *testparmRunner) Run(ctx context.Context, stdin, name string, args ...string) ([]byte, error) {
+	if name == "testparm" && len(args) > 0 && args[0] == "-s" && !strings.Contains(args[len(args)-1], "locostor-smb-") {
+		return []byte("# Global parameters\n[global]\n\tworkgroup = WORKGROUP\n\n[Scans]\n\tpath = /srv/scans\n\tread only = No\n\n[Reg]\n\tpath = /srv/reg\n"), nil
+	}
+	return r.fakeRunner.Run(ctx, stdin, name, args...)
+}
+
+func TestExternalUsesTestparm(t *testing.T) {
+	_, _, opts := newTest(t)
+	os.WriteFile(opts.MainConf, []byte(handWritten), 0o644)
+	m := New(&testparmRunner{}, opts)
+	scan, err := m.External(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]ExternalShare{}
+	for _, s := range scan.Shares {
+		byName[s.Name] = s
+	}
+	if s, ok := byName["Scans"]; !ok || s.Source != opts.MainConf || !s.Adoptable || len(s.Options) != 1 {
+		t.Errorf("Scans should come from the file with its options: %+v", s)
+	}
+	if s, ok := byName["Reg"]; !ok || s.Adoptable {
+		t.Errorf("registry share should be listed but not adoptable: %+v", s)
+	}
+	if _, ok := byName["Old$"]; ok {
+		t.Errorf("share unknown to testparm must not be listed")
 	}
 }

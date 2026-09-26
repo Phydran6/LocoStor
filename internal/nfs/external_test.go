@@ -52,7 +52,8 @@ func newExternalTest(t *testing.T) (*Manager, Options) {
 
 func TestExternal(t *testing.T) {
 	m, _ := newExternalTest(t)
-	ext, err := m.External()
+	scan, err := m.External()
+	ext := scan.Exports
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,8 @@ func TestExternal(t *testing.T) {
 func TestAdopt(t *testing.T) {
 	m, opts := newExternalTest(t)
 	ctx := context.Background()
-	ext, _ := m.External()
+	scan, _ := m.External()
+	ext := scan.Exports
 
 	e, err := m.Adopt(ctx, ext[0].Key)
 	if err != nil {
@@ -95,7 +97,8 @@ func TestAdopt(t *testing.T) {
 		t.Errorf("wrong block removed:\n%s", conf)
 	}
 
-	ext, _ = m.External()
+	scan, _ = m.External()
+	ext = scan.Exports
 	var key string
 	for _, x := range ext {
 		if x.Pseudo == "/srv/backup" {
@@ -111,5 +114,43 @@ func TestAdopt(t *testing.T) {
 	}
 	if list, _ := m.Exports(); len(list) != 2 {
 		t.Errorf("want 2 managed exports, got %+v", list)
+	}
+}
+
+func TestExternalRobustParsing(t *testing.T) {
+	dir := t.TempDir()
+	opts := Options{
+		StatePath:     filepath.Join(dir, "state.json"),
+		IncludePath:   filepath.Join(dir, "locostor.conf"),
+		MainConf:      filepath.Join(dir, "ganesha.conf"),
+		ExportsPath:   filepath.Join(dir, "exports"),
+		SkipPathCheck: true,
+	}
+	// Broken statement in LOG, missing ';' before '}', relative include.
+	os.WriteFile(opts.MainConf, []byte(`LOG { Default_Log_Level = WARN; Components { ALL = EVENT } oops }
+EXPORT { Export_Id = 7; Path = /srv/a; Pseudo = /a; FSAL { Name = VFS } }
+%include "more.conf"
+`), 0o644)
+	os.WriteFile(filepath.Join(dir, "more.conf"), []byte("EXPORT { Export_Id = 8; Path = /srv/b; Pseudo = /b; FSAL { Name = VFS; } }\n"), 0o644)
+	os.MkdirAll(opts.ExportsPath+".d", 0o755)
+	os.WriteFile(filepath.Join(opts.ExportsPath+".d", "x.exports"), []byte("/srv/c *(ro)\n"), 0o644)
+
+	m := New(fakeRunner{}, opts)
+	scan, err := m.External()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, e := range scan.Exports {
+		paths = append(paths, e.Path)
+	}
+	if strings.Join(paths, ",") != "/srv/a,/srv/b,/srv/c" {
+		t.Errorf("found %v, want /srv/a,/srv/b,/srv/c (warnings: %v)", paths, scan.Warnings)
+	}
+	if len(scan.Warnings) == 0 {
+		t.Error("broken LOG block should produce a warning")
+	}
+	if len(scan.Scanned) != 3 {
+		t.Errorf("scanned = %v", scan.Scanned)
 	}
 }
