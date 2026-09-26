@@ -1,0 +1,14 @@
+[Unit]
+Description=LocoStor storage management web UI
+Documentation=https://github.com/Phydran6/LocoStor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/locostor -config /etc/locostor/config.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
