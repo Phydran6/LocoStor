@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 )
 
 // WriteFileAtomic writes data to a temp file next to path and renames it
@@ -58,4 +60,20 @@ func WriteJSON(path string, v any, perm os.FileMode) error {
 		return err
 	}
 	return WriteFileAtomic(path, append(data, '\n'), perm)
+}
+
+// Backup writes a timestamped copy of data next to path
+// (path.locostor-YYYYMMDD-HHMMSS) and keeps only the newest keep backups.
+func Backup(path string, data []byte, perm os.FileMode, keep int) error {
+	name := path + ".locostor-" + time.Now().Format("20060102-150405")
+	if err := WriteFileAtomic(name, data, perm); err != nil {
+		return err
+	}
+	old, _ := filepath.Glob(path + ".locostor-*")
+	sort.Strings(old) // timestamps sort chronologically
+	for len(old) > keep {
+		os.Remove(old[0])
+		old = old[1:]
+	}
+	return nil
 }

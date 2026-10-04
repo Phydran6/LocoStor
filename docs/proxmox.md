@@ -28,8 +28,11 @@ continues with plain HTTP on port 8080), then:
 2. shows what it is going to change and asks for confirmation,
 3. adds the mount points (`mpN`) and disks (`devN`) to the container,
 4. allows raw disk access for SMART (`lxc.cap.drop` override),
-5. restarts the container and installs LocoStor inside,
-6. asks for the admin username and password.
+5. installs the host agent (`locostor-host.service`) and mounts its socket
+   directory `/var/lib/locostor-host` into the container, so the web UI can
+   show and edit the host's own SMB/NFS shares,
+6. restarts the container and installs LocoStor inside,
+7. asks for the admin username and password.
 
 At the end it prints the address to open.
 
@@ -91,3 +94,16 @@ can also pin the list in `/etc/locostor/config.json`:
 | Lost the authenticator app | Use a recovery code, or `pct exec <ID> -- locostor mfa-reset` |
 | Nginx Proxy Manager does not start | Docker needs nesting: `pct set <ID> -features nesting=1`, restart the container. |
 | Logs | `pct exec <ID> -- journalctl -u locostor -f` |
+
+## Shares on the host
+
+Shares that run on the Proxmox host itself (Samba in `/etc/samba/smb.conf`,
+kernel NFS in `/etc/exports`) appear in the **Proxmox host** tab of the SMB,
+SMB users and NFS pages once the installer has run on the host. LocoStor edits
+them in place; the host stays in charge.
+
+| Task | Command on the host |
+| --- | --- |
+| Agent status / logs | `systemctl status locostor-host`, `journalctl -u locostor-host` |
+| Remove the agent | `systemctl disable --now locostor-host && rm /etc/systemd/system/locostor-host.service` |
+| Restore a config | copy back `/etc/samba/smb.conf.locostor-<date>` or `/etc/exports.locostor-<date>` |

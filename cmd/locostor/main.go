@@ -24,6 +24,7 @@ import (
 	"github.com/Phydran6/LocoStor/internal/auth"
 	"github.com/Phydran6/LocoStor/internal/config"
 	"github.com/Phydran6/LocoStor/internal/demo"
+	"github.com/Phydran6/LocoStor/internal/hostagent"
 	"github.com/Phydran6/LocoStor/internal/nfs"
 	"github.com/Phydran6/LocoStor/internal/raid"
 	"github.com/Phydran6/LocoStor/internal/smart"
@@ -47,6 +48,7 @@ Usage:
   locostor tls self-signed [-listen :443]          serve HTTPS with a new self-signed certificate
   locostor tls files CERT KEY [-listen :443]       serve HTTPS with your own certificate
   locostor tls off [-listen :8080]                 serve plain HTTP (e.g. behind a reverse proxy)
+  locostor host-agent [-socket PATH]               run the agent on the Proxmox host (see installer)
   locostor version                                 print the version
 
 All commands accept -config FILE (default /etc/locostor/config.json).
@@ -70,6 +72,8 @@ func main() {
 		err = cmdMFAReset(args)
 	case "tls":
 		err = cmdTLS(args)
+	case "host-agent":
+		err = cmdHostAgent(args)
 	default:
 		fmt.Fprintf(os.Stderr, usageText, version)
 		os.Exit(2)
@@ -231,6 +235,24 @@ func save(cfg *config.Config, listen, cert, key string, redirects []string) erro
 	return nil
 }
 
+func cmdHostAgent(args []string) error {
+	fs := flag.NewFlagSet("host-agent", flag.ExitOnError)
+	fs.Usage = func() { fmt.Fprintf(os.Stderr, usageText, version) }
+	socket := fs.String("socket", hostagent.DefaultSocket, "Unix socket to listen on")
+	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	agent := hostagent.New(version, sysexec.OS{})
+	exe, _ := os.Executable()
+	agent.Updater = update.New(update.Options{
+		Repo:    "Phydran6/LocoStor",
+		Current: version,
+		Run:     sysexec.OS{},
+		Restart: func() { reexec(exe) }, // the new binary replaces this process
+	})
+	return agent.Serve(ctx, *socket)
+}
+
 func cmdServe(args []string) error {
 	fs, configPath := newFlags("locostor")
 	listen := fs.String("listen", "", "listen address, overrides the config (e.g. :8080)")
@@ -246,6 +268,7 @@ func cmdServe(args []string) error {
 		sysDir      = "/sys"
 		store       auth.Store
 		sessionFile string
+		host        http.Handler
 	)
 
 	if *demoMode {
@@ -260,6 +283,14 @@ func cmdServe(args []string) error {
 		}
 		run = demo.NewRunner()
 		smbOpts, nfsOpts = env.SMB, env.NFS
+		// A simulated Proxmox host with hand-written shares.
+		host = (&hostagent.Agent{
+			Version: version,
+			Run:     run,
+			SMB:     smb.NewInPlace(run, env.HostSMBConf, true),
+			Users:   smb.New(run, smb.Options{}),
+			NFS:     nfs.NewKernel(run, env.HostExports, true),
+		}).Handler()
 		procDir, sysDir = env.ProcDir, env.SysDir
 		log.Printf("demo mode: log in as %q with password %q", demo.Username, demo.Password)
 	} else {
@@ -278,6 +309,7 @@ func cmdServe(args []string) error {
 		store = cfg
 		sessionFile = filepath.Join(cfg.DataDir, "sessions.json")
 		smbOpts, nfsOpts = smb.DefaultOptions(cfg.DataDir), nfs.DefaultOptions(cfg.DataDir)
+		host = hostagent.Proxy(cfg.HostSocket)
 	}
 	if *listen != "" {
 		cfg.Listen = *listen
@@ -337,6 +369,7 @@ func cmdServe(args []string) error {
 		RAID:    func() ([]raid.Array, error) { return raid.Read(procDir, sysDir) },
 		SysInfo: sysInfo,
 		Web:     web.Dist(),
+		Host:    host,
 	}
 	srv.Handler = server.Handler()
 

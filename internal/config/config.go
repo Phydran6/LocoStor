@@ -30,6 +30,7 @@ type Config struct {
 	TLSCert       string        `json:"tls_cert,omitempty"`
 	TLSKey        string        `json:"tls_key,omitempty"`
 	HTTPRedirect  []string      `json:"http_redirect,omitempty"` // plain HTTP addresses redirecting to HTTPS
+	HostSocket    string        `json:"host_socket,omitempty"`   // agent on the Proxmox host
 	SmartDevices  []SmartDevice `json:"smart_devices,omitempty"`
 
 	path string
@@ -53,6 +54,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.DataDir == "" {
 		c.DataDir = "/var/lib/locostor"
+	}
+	if c.HostSocket == "" {
+		c.HostSocket = c.DataDir + "/host/agent.sock"
 	}
 	return c, nil
 }

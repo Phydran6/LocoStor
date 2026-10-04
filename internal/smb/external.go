@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/Phydran6/LocoStor/internal/fsutil"
+	"github.com/Phydran6/LocoStor/internal/sysexec"
 	"github.com/Phydran6/LocoStor/internal/valid"
 )
 
@@ -28,7 +28,9 @@ type section struct {
 	name       string
 	params     []Option
 	file       string
-	start, end int // line range [start, end) in file
+	start, end int // line range [start, end) in file, without trailing blank lines
+	comments   []string
+	hasInclude bool // an include line sits inside the section
 }
 
 var optionKeyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9 :_.-]{0,63}$`)
@@ -146,12 +148,24 @@ func parseSections(data, file string) ([]section, []string) {
 	var out []section
 	var includes []string
 	var cur *section
-	closeCur := func(end int) {
+	last := 0 // last line of the current section that is not blank or a comment
+	type comment struct {
+		line int
+		text string
+	}
+	var comments []comment
+	closeCur := func() {
 		if cur != nil {
-			cur.end = end
+			cur.end = last + 1
+			for _, c := range comments {
+				if c.line < cur.end {
+					cur.comments = append(cur.comments, c.text)
+				}
+			}
 			out = append(out, *cur)
 			cur = nil
 		}
+		comments = nil
 	}
 	for i := 0; i < len(lines); i++ {
 		start := i
@@ -160,15 +174,25 @@ func parseSections(data, file string) ([]section, []string) {
 			i++
 			line = strings.TrimSuffix(line, `\`) + " " + strings.TrimSpace(lines[i])
 		}
-		if line == "" || line[0] == '#' || line[0] == ';' {
+		if line == "" {
+			continue
+		}
+		if line[0] == '#' || line[0] == ';' {
+			if cur != nil {
+				comments = append(comments, comment{start, line})
+			}
 			continue
 		}
 		if line[0] == '[' {
-			closeCur(start)
+			closeCur()
 			if j := strings.IndexByte(line, ']'); j > 0 {
 				cur = &section{name: strings.TrimSpace(line[1:j]), file: file, start: start}
+				last = i
 			}
 			continue
+		}
+		if cur != nil {
+			last = i
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -177,13 +201,16 @@ func parseSections(data, file string) ([]section, []string) {
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		if normKey(key) == "include" {
 			includes = append(includes, value)
+			if cur != nil {
+				cur.hasInclude = true
+			}
 			continue
 		}
 		if cur != nil {
 			cur.params = append(cur.params, Option{Key: key, Value: value})
 		}
 	}
-	closeCur(len(lines))
+	closeCur()
 	return out, includes
 }
 
@@ -219,8 +246,12 @@ func readSections(path string, skip map[string]bool, depth int, scan *Scan) []se
 // effectiveSections asks Samba for the configuration it actually uses
 // (testparm), which also covers registry shares and anything the file
 // parser might miss. ok is false if testparm is not available.
-func (m *Manager) effectiveSections(ctx context.Context) (secs []section, ok bool) {
-	out, err := m.run.Run(ctx, "", "testparm", "-s", "--suppress-prompt", m.opts.MainConf)
+func (m *Manager) effectiveSections(ctx context.Context) ([]section, bool) {
+	return effectiveSections(ctx, m.run, m.opts.MainConf)
+}
+
+func effectiveSections(ctx context.Context, run sysexec.Runner, mainConf string) (secs []section, ok bool) {
+	out, err := run.Run(ctx, "", "testparm", "-s", "--suppress-prompt", mainConf)
 	if err != nil && len(out) == 0 {
 		return nil, false
 	}
@@ -409,6 +440,5 @@ func (m *Manager) Adopt(ctx context.Context, name string) (Share, error) {
 
 // backup writes a timestamped copy next to path, e.g. smb.conf.locostor-20260926-193000.
 func backup(path string, data []byte) error {
-	name := path + ".locostor-" + time.Now().Format("20060102-150405")
-	return fsutil.WriteFileAtomic(name, data, 0o644)
+	return fsutil.Backup(path, data, 0o644, 5)
 }

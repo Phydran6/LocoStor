@@ -12,7 +12,8 @@
 
 - **SMB shares** – create, edit and remove Samba shares; manage SMB users
 - **NFS exports** – manage NFS-Ganesha exports (NFSv3/v4, client lists, squash)
-- **Existing shares** – shares from `smb.conf`, `ganesha.conf` and `/etc/exports` are detected and can be taken over
+- **Shares of the Proxmox host** – the host's own SMB shares, Samba users and NFS exports are shown and can be edited; changes are made in place, so the host stays in charge and manual edits keep working
+- **Existing shares in the container** – shares from `smb.conf`, `ganesha.conf` and `/etc/exports` are detected and can be taken over
 - **RAID status** – read-only view of the host's mdadm arrays incl. rebuild progress
 - **SMART** – disk health via `smartctl`, USB disks via `-d sat`, sleeping disks are not woken up
 - **Self-update** – checks GitHub Releases, one-click update (SHA-256 verified) and rollback
@@ -40,6 +41,24 @@ username and password. It prints the address to open at the end.
 
 Details, manual setup and troubleshooting: **[docs/proxmox.md](docs/proxmox.md)**.
 Run inside a container, the same command installs LocoStor only there.
+
+## Shares on the Proxmox host
+
+When the installer runs on the host, it also sets up the **host agent**
+(`locostor-host.service`). It lets the web UI show and edit the host's own
+Samba shares and users and kernel NFS exports – the *Proxmox host* tab on the
+share pages.
+
+- The host stays the owner: LocoStor rewrites only the affected `[section]`
+  of `smb.conf` or the one line of `/etc/exports`. Comments, global settings
+  and everything else are left alone, and manual edits keep working.
+- Each change is checked first (`testparm`, `exportfs -ra`), a backup is
+  written (`<file>.locostor-<date>`, the last five are kept) and the change is
+  rolled back if the service rejects it.
+- The agent listens only on a Unix socket in `/var/lib/locostor-host`, which
+  is bind-mounted into the container. It is not reachable over the network and
+  applies the same checks as LocoStor itself (no system directories, no
+  smb.conf options that run commands).
 
 ## HTTPS
 

@@ -105,7 +105,11 @@ func (m *Manager) load() ([]Share, error) {
 	return shares, nil
 }
 
-func (m *Manager) validate(s *Share) error {
+func (m *Manager) validate(s *Share) error { return validateShare(s, !m.opts.SkipPathCheck) }
+
+// validateShare checks and normalizes a share. With mustExist the path must
+// be an existing directory.
+func validateShare(s *Share, mustExist bool) error {
 	s.Name = strings.TrimSpace(s.Name)
 	if !shareNameRe.MatchString(s.Name) {
 		return valid.Errorf("share name may contain letters, digits, space, '.', '_' and '-' (max 80)")
@@ -113,7 +117,7 @@ func (m *Manager) validate(s *Share) error {
 	if reserved[strings.ToLower(s.Name)] {
 		return valid.Errorf("share name %q is reserved", s.Name)
 	}
-	p, err := valid.SharePath("path", s.Path, !m.opts.SkipPathCheck)
+	p, err := valid.SharePath("path", s.Path, mustExist)
 	if err != nil {
 		return err
 	}
@@ -205,25 +209,35 @@ func Render(shares []Share) string {
 	var b strings.Builder
 	b.WriteString("# Managed by LocoStor. Do not edit - changes will be overwritten.\n")
 	for _, s := range shares {
-		fmt.Fprintf(&b, "\n[%s]\n", s.Name)
-		fmt.Fprintf(&b, "   path = %s\n", s.Path)
-		if s.Comment != "" {
-			fmt.Fprintf(&b, "   comment = %s\n", s.Comment)
-		}
-		fmt.Fprintf(&b, "   read only = %s\n", yesno(s.ReadOnly))
-		fmt.Fprintf(&b, "   browseable = %s\n", yesno(s.Browseable))
-		fmt.Fprintf(&b, "   guest ok = %s\n", yesno(s.GuestOK))
-		if len(s.ValidUsers) > 0 {
-			fmt.Fprintf(&b, "   valid users = %s\n", strings.Join(s.ValidUsers, " "))
-		}
-		for _, o := range s.Options {
-			fmt.Fprintf(&b, "   %s = %s\n", o.Key, o.Value)
-		}
-		if !s.Enabled {
-			b.WriteString("   available = no\n")
-		}
+		b.WriteString("\n")
+		writeShare(&b, s, nil)
 	}
 	return b.String()
+}
+
+// writeShare renders one share section. comments are kept from an existing
+// section that is rewritten in place.
+func writeShare(b *strings.Builder, s Share, comments []string) {
+	fmt.Fprintf(b, "[%s]\n", s.Name)
+	for _, c := range comments {
+		fmt.Fprintf(b, "   %s\n", c)
+	}
+	fmt.Fprintf(b, "   path = %s\n", s.Path)
+	if s.Comment != "" {
+		fmt.Fprintf(b, "   comment = %s\n", s.Comment)
+	}
+	fmt.Fprintf(b, "   read only = %s\n", yesno(s.ReadOnly))
+	fmt.Fprintf(b, "   browseable = %s\n", yesno(s.Browseable))
+	fmt.Fprintf(b, "   guest ok = %s\n", yesno(s.GuestOK))
+	if len(s.ValidUsers) > 0 {
+		fmt.Fprintf(b, "   valid users = %s\n", strings.Join(s.ValidUsers, " "))
+	}
+	for _, o := range s.Options {
+		fmt.Fprintf(b, "   %s = %s\n", o.Key, o.Value)
+	}
+	if !s.Enabled {
+		b.WriteString("   available = no\n")
+	}
 }
 
 func (m *Manager) apply(ctx context.Context, shares []Share) error {
@@ -275,11 +289,13 @@ func (m *Manager) ensureInclude() error {
 	return fsutil.WriteFileAtomic(m.opts.MainConf, []byte(s), 0o644)
 }
 
-func (m *Manager) reload(ctx context.Context) error {
-	if _, err := m.run.Run(ctx, "", "smbcontrol", "smbd", "reload-config"); err == nil {
+func (m *Manager) reload(ctx context.Context) error { return reloadSamba(ctx, m.run) }
+
+func reloadSamba(ctx context.Context, run sysexec.Runner) error {
+	if _, err := run.Run(ctx, "", "smbcontrol", "smbd", "reload-config"); err == nil {
 		return nil
 	}
-	if _, err := m.run.Run(ctx, "", "systemctl", "reload-or-restart", "smbd"); err != nil {
+	if _, err := run.Run(ctx, "", "systemctl", "reload-or-restart", "smbd"); err != nil {
 		return fmt.Errorf("reload samba: %w", err)
 	}
 	return nil

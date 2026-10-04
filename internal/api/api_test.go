@@ -69,8 +69,10 @@ func TestStaticAssets(t *testing.T) {
 
 func TestAPIProtection(t *testing.T) {
 	h := testServer(t)
-	if rec := do(h, "GET", "/api/dashboard", "", nil); rec.Code != http.StatusUnauthorized {
-		t.Errorf("dashboard without session: %d", rec.Code)
+	for _, p := range []string{"/api/dashboard", "/api/host/info", "/api/host/smb/shares"} {
+		if rec := do(h, "GET", p, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without session: %d", p, rec.Code)
+		}
 	}
 	body := `{"username":"admin","password":"correct horse"}`
 	if rec := do(h, "POST", "/api/auth/login", body, map[string]string{"Content-Type": "application/json"}); rec.Code != http.StatusForbidden {

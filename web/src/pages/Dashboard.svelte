@@ -7,6 +7,7 @@
   import PageHeader from '../components/PageHeader.svelte';
   import { api } from '../lib/api.svelte.js';
   import { bytes, capacity, duration, percent, tone } from '../lib/format.js';
+  import { host, loadHost } from '../lib/host.svelte.js';
 
   let data = $state(null);
   let error = $state('');
@@ -21,9 +22,18 @@
     }
   }
 
+  // Shares of the Proxmox host, if it is connected.
+  let hostSmb = $state(null);
+  let hostNfs = $state(null);
+
   onMount(() => {
     load();
     api.get('/api/smart').then((r) => (smart = r.disks)).catch(() => (smart = []));
+    loadHost().then(() => {
+      if (!host.info?.available) return;
+      if (host.info.samba) api.get('/api/host/smb/shares').then((r) => (hostSmb = r.shares.filter((s) => s.path).length)).catch(() => {});
+      if (host.info.nfs) api.get('/api/host/nfs/exports').then((r) => (hostNfs = r.exports.length)).catch(() => {});
+    });
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
   });
@@ -57,8 +67,8 @@
         </div>
       </a>
     {/snippet}
-    {@render stat('#/smb/shares', 'folder', data.smb_shares, 'SMB shares', data.smb_external ? `${data.smb_external} unmanaged` : '', 'text-zinc-500')}
-    {@render stat('#/nfs', 'network', data.nfs_exports, 'NFS exports', data.nfs_external ? `${data.nfs_external} unmanaged` : '', 'text-zinc-500')}
+    {@render stat('#/smb/shares', 'folder', data.smb_shares + (hostSmb ?? 0), 'SMB shares', hostSmb !== null ? `${hostSmb} on the host` : '', 'text-zinc-500')}
+    {@render stat('#/nfs', 'network', data.nfs_exports + (hostNfs ?? 0), 'NFS exports', hostNfs !== null ? `${hostNfs} on the host` : '', 'text-zinc-500')}
     {@render stat(
       '#/raid',
       'layers',
@@ -132,6 +142,14 @@
               <Badge tone={tone(state)} dot>{state}</Badge>
             </li>
           {/each}
+          {#if host.info?.available}
+            {#each Object.entries(host.info.services ?? {}) as [name, state]}
+              <li class="flex items-center justify-between text-sm">
+                <span class="mono">{name} <span class="text-xs text-zinc-500">(host)</span></span>
+                <Badge tone={tone(state)} dot>{state}</Badge>
+              </li>
+            {/each}
+          {/if}
         </ul>
       </div>
     </section>

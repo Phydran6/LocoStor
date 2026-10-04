@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-04
+
+### Added
+
+- Shares of the Proxmox host itself: SMB shares (smb.conf), Samba users and kernel NFS exports (`/etc/exports`, `/etc/exports.d`) of the host are shown and can be added, edited and removed from the web UI
+- Host changes are made in place – only the affected `[section]` or export line is rewritten, comments and everything else stay; the host keeps owning its config, so manual edits keep working
+- Every host change is checked first (`testparm`, `exportfs -ra`), backed up (last 5 kept) and rolled back if the service rejects it
+- `locostor host-agent`: small service on the Proxmox host, reachable only through a Unix socket bind-mounted into the container; the installer sets it up when run on the host
+- "Proxmox host / This container" tabs on the SMB, SMB users and NFS pages; dashboard counts host shares and shows host services
+- Update page shows the host agent version and can update it
+
+### Changed
+
+- Detected sections end at their last setting, so comments above the next section stay where they are
+
 ## [0.3.0] - 2026-09-26
 
 ### Added
@@ -71,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer script, systemd unit and Proxmox setup guide
 - GitHub Actions for CI and releases (linux/amd64, linux/arm64)
 
-[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Phydran6/LocoStor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Phydran6/LocoStor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Phydran6/LocoStor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Phydran6/LocoStor/releases/tag/v0.1.0

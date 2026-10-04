@@ -8,6 +8,9 @@
   import PageHeader from '../components/PageHeader.svelte';
   import { api } from '../lib/api.svelte.js';
   import { toast, confirm } from '../lib/ui.svelte.js';
+  import ScopeTabs from '../components/ScopeTabs.svelte';
+  import HostNfs from '../components/HostNfs.svelte';
+  import { host, scope, loadHost } from '../lib/host.svelte.js';
 
   let exports = $state(null);
   let external = $state([]);
@@ -24,7 +27,8 @@
   let formError = $state('');
 
   const squashLabels = { root_squash: 'root squash', no_root_squash: 'no root squash', all_squash: 'all squash' };
-  const host = location.hostname;
+  const serverName = location.hostname;
+  let onHost = $derived(!!host.info?.available && scope.value === 'host');
 
   async function load() {
     try {
@@ -52,7 +56,10 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    loadHost();
+    load();
+  });
 
   function openNew() {
     editing = 0;
@@ -116,12 +123,20 @@
   }
 </script>
 
-<PageHeader title="NFS exports" description="Linux / Unix network shares served by NFS-Ganesha">
+<PageHeader title="NFS exports" description="Linux / Unix network shares">
   {#snippet actions()}
-    <button class="btn btn-secondary" onclick={load}><Icon name="refresh" size={16} />Refresh</button>
-    <button class="btn btn-primary" onclick={openNew}><Icon name="plus" size={16} />Add export</button>
+    {#if !onHost}
+      <button class="btn btn-secondary" onclick={load}><Icon name="refresh" size={16} />Refresh</button>
+      <button class="btn btn-primary" onclick={openNew}><Icon name="plus" size={16} />Add export</button>
+    {/if}
   {/snippet}
 </PageHeader>
+
+<ScopeTabs />
+
+{#if onHost}
+  <HostNfs />
+{:else}
 
 <div class="card overflow-hidden">
   {#if exports === null || exports.length === 0}
@@ -173,7 +188,7 @@
 {#if exports?.length}
   <div class="mt-4 rounded-lg border border-zinc-200 bg-white/60 px-4 py-3 text-sm text-zinc-600 dark:border-ink-800 dark:bg-zinc-900/60 dark:text-zinc-400">
     <p class="mb-1 flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-300"><Icon name="info" size={16} />Mount on a client</p>
-    <code class="mono block overflow-x-auto whitespace-nowrap">mount -t nfs4 {host}:{exports[0].pseudo} /mnt/{exports[0].pseudo.split('/').pop()}</code>
+    <code class="mono block overflow-x-auto whitespace-nowrap">mount -t nfs4 {serverName}:{exports[0].pseudo} /mnt/{exports[0].pseudo.split('/').pop()}</code>
   </div>
 {/if}
 
@@ -228,6 +243,8 @@
       {#each scan.warnings as w}<li class="text-amber-600 dark:text-amber-400">{w}</li>{/each}
     </ul>
   </details>
+{/if}
+
 {/if}
 
 <Modal title={editing ? `Edit export ${form.pseudo}` : 'Add NFS export'} bind:open={editOpen}>

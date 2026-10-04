@@ -191,7 +191,37 @@ type Env struct {
 	SysDir  string
 	SMB     smb.Options
 	NFS     nfs.Options
+	// Files of the simulated Proxmox host.
+	HostSMBConf string
+	HostExports string
 }
+
+const hostSMBConf = `#======================= Global Settings =======================
+[global]
+   workgroup = WORKGROUP
+   server string = %h server (Samba, Proxmox)
+   map to guest = bad user
+
+# Main data share on the RAID
+[nas2]
+   path = /mnt/raid/data
+   writable = yes
+   valid users = alice bob
+   create mask = 0660
+   directory mask = 0770
+
+# Media for the TV
+[media]
+   path = /mnt/raid/media
+   guest ok = yes
+   read only = yes
+`
+
+const hostExports = `# /etc/exports: the access control list for filesystems which may be exported
+#               to NFS clients.  See exports(5).
+/mnt/raid/proxmox 192.168.1.2(rw,sync,no_subtree_check,no_root_squash) 192.168.1.3(rw,sync,no_subtree_check,no_root_squash)
+/mnt/raid/iso *(ro,sync,no_subtree_check)
+`
 
 // Setup creates a temp directory with fake config files and seed data.
 func Setup() (*Env, error) {
@@ -216,9 +246,13 @@ func Setup() (*Env, error) {
 			ExportsPath:   filepath.Join(dir, "exports"),
 			SkipPathCheck: true,
 		},
+		HostSMBConf: filepath.Join(dir, "host", "samba", "smb.conf"),
+		HostExports: filepath.Join(dir, "host", "exports"),
 	}
 	// Hand-written configs, as found on a system set up before LocoStor.
 	existing := map[string]string{
+		e.HostSMBConf:  hostSMBConf,
+		e.HostExports:  hostExports,
 		e.SMB.MainConf: smbConf,
 		e.NFS.MainConf: ganeshaConf,
 		e.NFS.ExportsPath: "# /etc/exports: the access control list for filesystems\n" +

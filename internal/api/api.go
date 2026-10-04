@@ -39,6 +39,9 @@ type Server struct {
 	SysInfo func() sysinfo.Info
 	// Web is the built frontend (index.html at the root).
 	Web fs.FS
+	// Host forwards /api/host/* to the agent on the Proxmox host
+	// (prefix stripped). Nil means no host connection.
+	Host http.Handler
 }
 
 // Handler returns the root HTTP handler.
@@ -87,6 +90,18 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/update/apply", s.updateApply)
 	api.HandleFunc("POST /api/update/rollback", s.updateRollback)
 	api.HandleFunc("GET /api/update/progress", s.updateProgress)
+
+	if s.Host != nil {
+		api.Handle("/api/host/", http.StripPrefix("/api/host", s.Host))
+	} else {
+		api.HandleFunc("/api/host/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/host/info" {
+				writeJSON(w, http.StatusOK, map[string]any{"available": false})
+				return
+			}
+			writeError(w, http.StatusServiceUnavailable, "the Proxmox host is not connected")
+		})
+	}
 
 	public.Handle("/api/", s.requireAuth(api))
 

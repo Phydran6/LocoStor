@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Phydran6/LocoStor/internal/fsutil"
 	"github.com/Phydran6/LocoStor/internal/valid"
@@ -598,8 +597,7 @@ func (m *Manager) Adopt(ctx context.Context, key string) (Export, error) {
 	if err != nil {
 		return e, err
 	}
-	name := target.file + ".locostor-" + time.Now().Format("20060102-150405")
-	if err := fsutil.WriteFileAtomic(name, original, 0o644); err != nil {
+	if err := fsutil.Backup(target.file, original, 0o644, 5); err != nil {
 		return e, err
 	}
 	end := target.end

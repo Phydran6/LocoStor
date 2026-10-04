@@ -137,6 +137,28 @@ ask_https() {
   esac
 }
 
+# install_binary: download the latest release for this machine to $BIN and
+# verify it against SHA256SUMS.
+install_binary() {
+  case "$(uname -m)" in
+    x86_64) ARCH=amd64 ;;
+    aarch64 | arm64) ARCH=arm64 ;;
+    *) die "unsupported architecture: $(uname -m)" ;;
+  esac
+  say "Downloading LocoStor (linux/$ARCH)"
+  dl=$(mktemp -d)
+  URL="https://github.com/$REPO/releases/latest/download"
+  fetch "$URL/locostor-linux-$ARCH" "$dl/locostor-linux-$ARCH"
+  fetch "$URL/SHA256SUMS" "$dl/SHA256SUMS"
+  if ! (cd "$dl" && grep " locostor-linux-$ARCH\$" SHA256SUMS | sha256sum -c --quiet -); then
+    rm -rf "$dl"
+    die "checksum mismatch"
+  fi
+  install -m 0755 "$dl/locostor-linux-$ARCH" "$BIN"
+  rm -rf "$dl"
+  info "installed $("$BIN" version) to $BIN"
+}
+
 # ---------------------------------------------------------------------------
 # Inside the container
 # ---------------------------------------------------------------------------
@@ -254,15 +276,7 @@ install_container() {
   apt-get install -y -qq --no-install-recommends \
     samba nfs-ganesha nfs-ganesha-vfs smartmontools curl ca-certificates $extra >/dev/null </dev/null
 
-  say "Downloading LocoStor (linux/$ARCH)"
-  TMP=$(mktemp -d)
-  trap 'rm -rf "$TMP"' EXIT
-  URL="https://github.com/$REPO/releases/latest/download"
-  fetch "$URL/locostor-linux-$ARCH" "$TMP/locostor-linux-$ARCH"
-  fetch "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
-  (cd "$TMP" && grep " locostor-linux-$ARCH\$" SHA256SUMS | sha256sum -c --quiet -) || die "checksum mismatch"
-  install -m 0755 "$TMP/locostor-linux-$ARCH" "$BIN"
-  info "installed $("$BIN" version) to $BIN"
+  install_binary
 
   # Shares with "guest ok" need guests mapped to the guest account.
   if [ -f /etc/samba/smb.conf ] && ! grep -qi '^[[:space:]]*map to guest' /etc/samba/smb.conf; then
@@ -313,6 +327,37 @@ EOF
 # ---------------------------------------------------------------------------
 # On the Proxmox VE host
 # ---------------------------------------------------------------------------
+
+AGENT_DIR=/var/lib/locostor-host     # on the host; holds the agent socket
+AGENT_MP=/var/lib/locostor/host      # the same directory inside the container
+
+# setup_host_agent installs (or updates) the agent that lets LocoStor show
+# and edit this host's own SMB/NFS shares. It only listens on a Unix socket
+# in $AGENT_DIR, which is bind-mounted into the container.
+setup_host_agent() {
+  install_binary
+  mkdir -p "$AGENT_DIR"
+  chmod 700 "$AGENT_DIR"
+  cat >/etc/systemd/system/locostor-host.service <<'EOF'
+[Unit]
+Description=LocoStor host agent (SMB/NFS shares of this host for the LocoStor container)
+Documentation=https://github.com/Phydran6/LocoStor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/locostor host-agent -socket /var/lib/locostor-host/agent.sock
+Restart=always
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable locostor-host >/dev/null 2>&1
+  systemctl restart locostor-host
+}
 
 # next_index <prefix> <conf>: first unused mpN / devN key
 next_index() {
@@ -404,13 +449,19 @@ install_host() {
   if [ "$HTTPS_MODE" = 5 ] && ! printf '%s' "$FEATURES" | grep -q 'nesting=1'; then
     NEED_NESTING=1
   fi
+  NEED_AGENT=""
+  grep -Eq "^mp[0-9]+:.*[ ,]mp=$AGENT_MP(,|$)" "$CONF" || NEED_AGENT=1
 
   say "Container $CT ($(main_conf | sed -n 's/^hostname: *//p'))"
-  if [ -n "$NEW_MOUNTS$NEW_DEVS$NEED_CAP$NEED_NESTING" ]; then
+  if [ -n "$NEW_MOUNTS$NEW_DEVS$NEED_CAP$NEED_NESTING$NEED_AGENT" ]; then
     for mp in $NEW_MOUNTS; do info "mount  $mp -> $mp"; done
     for dev in $NEW_DEVS; do info "disk   $dev (for RAID status and SMART)"; done
     [ -n "$NEED_CAP" ] && info "allow  raw disk access (CAP_SYS_RAWIO, needed by smartctl)"
     [ -n "$NEED_NESTING" ] && info "enable nesting (needed by Docker for Nginx Proxy Manager)"
+    if [ -n "$NEED_AGENT" ]; then
+      info "agent  install the LocoStor host agent, so the web UI can show and edit this"
+      info "       host's SMB/NFS shares in place (they stay manageable on the host as before)"
+    fi
     [ -n "$RUNNING" ] && info "The container will be restarted."
     ask "Apply these changes? [Y/n] "
     case "$REPLY" in n* | N*) die "aborted" ;; esac
@@ -429,6 +480,11 @@ install_host() {
     if [ -n "$NEED_NESTING" ]; then
       pct set "$CT" -features "${FEATURES:+$FEATURES,}nesting=1"
     fi
+    if [ -n "$NEED_AGENT" ]; then
+      mkdir -p "$AGENT_DIR"
+      chmod 700 "$AGENT_DIR"
+      pct set "$CT" "-mp$(next_index mp "$CONF")" "$AGENT_DIR,mp=$AGENT_MP"
+    fi
     if [ -n "$NEED_CAP" ]; then
       # Raw lxc.* keys must go before the first [snapshot] section.
       tmp=$(mktemp)
@@ -442,6 +498,10 @@ install_host() {
   else
     info "already set up"
   fi
+
+  # Install or update the host agent on every run.
+  say "Installing the LocoStor host agent"
+  setup_host_agent
 
   if ! pct status "$CT" | grep -q running; then
     say "Starting container $CT"

@@ -4,6 +4,8 @@
   import Badge from '../components/Badge.svelte';
   import Progress from '../components/Progress.svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import HostAgentCard from '../components/HostAgentCard.svelte';
+  import { loadHost } from '../lib/host.svelte.js';
   import { api } from '../lib/api.svelte.js';
   import { toast, confirm, updates, loadUpdateStatus } from '../lib/ui.svelte.js';
   import { bytes, dateTime } from '../lib/format.js';
@@ -22,6 +24,7 @@
   const labels = { preparing: 'Prepare', downloading: 'Download', verifying: 'Verify', installing: 'Install', restarting: 'Restart' };
 
   onMount(async () => {
+    loadHost();
     await loadUpdateStatus();
     // Show a run started in another tab (or before a page reload).
     try {
@@ -250,3 +253,5 @@
     </section>
   </div>
 {/if}
+
+<HostAgentCard />

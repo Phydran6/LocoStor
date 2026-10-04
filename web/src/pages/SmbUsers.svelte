@@ -4,11 +4,15 @@
   import Modal from '../components/Modal.svelte';
   import State from '../components/State.svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import ScopeTabs from '../components/ScopeTabs.svelte';
   import { api } from '../lib/api.svelte.js';
   import { toast, confirm } from '../lib/ui.svelte.js';
+  import { host, scope, loadHost } from '../lib/host.svelte.js';
 
   let users = $state(null);
   let error = $state('');
+  let onHost = $derived(!!host.info?.available && scope.value === 'host');
+  let base = $derived(onHost ? '/api/host/smb/users' : '/api/smb/users');
 
   let modalOpen = $state(false);
   let mode = $state('add'); // add | password
@@ -20,14 +24,25 @@
 
   async function load() {
     try {
-      users = await api.get('/api/smb/users');
+      users = await api.get(base);
       error = '';
     } catch (e) {
       error = e.message;
     }
   }
 
-  onMount(load);
+  onMount(() => loadHost());
+
+  // Load once the host state is known, and again when the tab changes.
+  let lastScope = '';
+  $effect(() => {
+    const key = `${onHost}`;
+    if (host.info && key !== lastScope) {
+      lastScope = key;
+      users = null;
+      load();
+    }
+  });
 
   function open(m, user = '') {
     mode = m;
@@ -46,10 +61,10 @@
     formError = '';
     try {
       if (mode === 'add') {
-        await api.post('/api/smb/users', { name, password });
+        await api.post(base, { name, password });
         toast.success(`User "${name}" created`);
       } else {
-        await api.put(`/api/smb/users/${encodeURIComponent(name)}/password`, { password });
+        await api.put(`${base}/${encodeURIComponent(name)}/password`, { password });
         toast.success(`Password for "${name}" changed`);
       }
       modalOpen = false;
@@ -70,7 +85,7 @@
     });
     if (!yes) return;
     try {
-      await api.del(`/api/smb/users/${encodeURIComponent(u.name)}`);
+      await api.del(`${base}/${encodeURIComponent(u.name)}`);
       toast.success(`User "${u.name}" removed`);
       load();
     } catch (err) {
@@ -84,6 +99,8 @@
     <button class="btn btn-primary" onclick={() => open('add')}><Icon name="plus" size={16} />Add user</button>
   {/snippet}
 </PageHeader>
+
+<ScopeTabs />
 
 <div class="card overflow-hidden">
   {#if users === null || users.length === 0}
@@ -110,7 +127,7 @@
   {/if}
 </div>
 
-<Modal title={mode === 'add' ? 'Add SMB user' : `Change password of "${name}"`} bind:open={modalOpen}>
+<Modal title={mode === 'add' ? `Add SMB user${onHost ? ' on the host' : ''}` : `Change password of "${name}"`} bind:open={modalOpen}>
   <form id="user-form" class="space-y-4" onsubmit={save}>
     {#if mode === 'add'}
       <div>
