@@ -9,6 +9,13 @@ on:
         description: Tag to release (used by the security workflow)
         type: string
         required: true
+  # Actions → Release → Run workflow: tags the selected branch and releases it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to create, e.g. v0.5.0
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -21,7 +28,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || inputs.tag || github.ref }}
+
+      - name: Create the tag (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "tag must look like v1.2.3"; exit 1 ;; esac
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG exists already - releasing it"
+            git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+            git checkout -q "$TAG"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "LocoStor $TAG"
+            git push origin "$TAG"
+          fi
 
       - uses: actions/setup-node@v5
         with:

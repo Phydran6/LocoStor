@@ -265,10 +265,12 @@ scripts/          installer
 Versions follow [Semantic Versioning](https://semver.org). Pushing a tag
 `vX.Y.Z` runs the release workflow, which builds `linux/amd64` and
 `linux/arm64` binaries and publishes them with the matching section of
-[CHANGELOG.md](CHANGELOG.md) as release notes.
+[CHANGELOG.md](CHANGELOG.md) as release notes. Without a local Git, use
+*Actions → Release → Run workflow* on `main` with the tag (e.g. `v0.5.0`):
+it creates the tag and the release.
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.5.0 && git push origin v0.5.0
 ```
 
 ## License
