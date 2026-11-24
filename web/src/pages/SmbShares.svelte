@@ -147,12 +147,29 @@
     }
   }
 
-  async function repair(s) {
+  // Shares whose folder permissions would block writing.
+  let blocked = $derived(
+    ((onHost ? hostScan?.shares?.filter((x) => x.editable) : shares) ?? []).filter((x) => !x.fix_permissions && x.warnings?.length && x.path),
+  );
+
+  async function repairAll() {
     const yes = await confirm({
-      title: 'Fix folder permissions',
-      message: `Give the LocoStor group read/write rights on ${s.path} and everything below it? Who may read or write is still decided by the share settings. Owners and existing rights stay; on large folders this takes a while.`,
-      confirmLabel: 'Fix permissions',
+      title: 'Make shares writable',
+      message: `Fix the folder permissions of ${blocked.map((x) => x.name).join(', ')}? The LocoStor group gets read/write rights on the folders; who may read or write is still decided by each share's access settings.`,
+      confirmLabel: 'Fix all',
     });
+    if (!yes) return;
+    for (const x of [...blocked]) await repair(x, false);
+  }
+
+  async function repair(s, ask = true) {
+    const yes =
+      !ask ||
+      (await confirm({
+        title: 'Fix folder permissions',
+        message: `Give the LocoStor group read/write rights on ${s.path} and everything below it? Who may read or write is still decided by the share settings. Owners and existing rights stay; on large folders this takes a while.`,
+        confirmLabel: 'Fix permissions',
+      }));
     if (!yes) return;
     try {
       if (!s.fix_permissions) {
@@ -267,6 +284,17 @@
     <Icon name="alert" size={16} />The agent on the Proxmox host is older than LocoStor ({host.info.version}). Update it to edit access rights and the network name of the host.
     <a href="#/update" class="font-medium underline">Update the host agent</a>
   </p>
+{/if}
+
+{#if blocked.length && !hostOutdated}
+  <div class="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+    <Icon name="alert" size={18} />
+    <span class="flex-1">
+      <b>{blocked.length === 1 ? '1 share is' : `${blocked.length} shares are`} probably read only</b> because Linux does not let SMB users write to the
+      folder: {blocked.map((x) => x.name).join(', ')}.
+    </span>
+    <button class="btn btn-primary" onclick={repairAll}><Icon name="shield" size={16} />Make writable</button>
+  </div>
 {/if}
 
 {#if !hostOutdated && (!onHost || host.info?.samba)}
