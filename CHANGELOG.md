@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **SMB users could not be created with a password manager (e.g. Bitwarden)**: an autofilled user name with uppercase letters, dots or an `@`, or an empty *Repeat password*, made the browser silently block *Save* (its hint bubble was hidden behind the password manager). The dialog now checks the input itself and shows the problem in the dialog. Spaces around the user name are removed and uppercase letters are turned into lowercase, and the values are read directly from the fields, so autofill that sends no input events also works
+
 ## [0.5.0] - 2026-11-24
 
 ### Fixed
