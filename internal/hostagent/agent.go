@@ -16,11 +16,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Phydran6/LocoStor/internal/nfs"
 	"github.com/Phydran6/LocoStor/internal/smb"
+	"github.com/Phydran6/LocoStor/internal/smbapi"
 	"github.com/Phydran6/LocoStor/internal/sysexec"
+	"github.com/Phydran6/LocoStor/internal/system"
+	"github.com/Phydran6/LocoStor/internal/tasks"
 	"github.com/Phydran6/LocoStor/internal/update"
 	"github.com/Phydran6/LocoStor/internal/valid"
 )
@@ -34,11 +38,19 @@ type Agent struct {
 	Version string
 	Run     sysexec.Runner
 	SMB     *smb.InPlace
-	Users   *smb.Manager // only the user functions are used
+	Users   *smb.UserManager
+	Network *smb.Network
 	NFS     *nfs.Kernel
+	Tasks   *tasks.Manager
+	Apt     *system.Apt
+	// Demo skips filesystem checks and changes.
+	Demo bool
 	// Updater updates the agent binary on request from the UI (optional).
 	Updater *update.Updater
 }
+
+// StateDir holds the agent's own state on the host (next to the socket).
+const StateDir = "/var/lib/locostor-host"
 
 // New creates an agent for the real host configuration.
 func New(version string, run sysexec.Runner) *Agent {
@@ -46,8 +58,13 @@ func New(version string, run sysexec.Runner) *Agent {
 		Version: version,
 		Run:     run,
 		SMB:     smb.NewInPlace(run, "/etc/samba/smb.conf", false),
-		Users:   smb.New(run, smb.Options{}),
+		Users:   smb.NewUsers(run),
+		// The host keeps announcing itself as before unless changed.
+		Network: smb.NewNetwork(run, "/etc/samba/smb.conf", filepath.Join(StateDir, "network.json"), smb.DiscoveryOn, false),
 		NFS:     nfs.NewKernel(run, "/etc/exports", false),
+		Tasks:   tasks.New(filepath.Join(StateDir, "tasks"), version),
+		// Proxmox VE must be upgraded with dist-upgrade.
+		Apt: system.NewApt(filepath.Join(StateDir, "apt.json"), true),
 	}
 }
 
@@ -59,7 +76,13 @@ type Info struct {
 	Samba     bool              `json:"samba"`
 	NFS       bool              `json:"nfs"`
 	Services  map[string]string `json:"services"`
+	// Features lists what this agent supports, so a newer UI knows when
+	// the agent must be updated first.
+	Features []string `json:"features"`
 }
+
+// Features of this agent version.
+var Features = []string{"share-access", "network", "users-v2", "tasks", "system-updates"}
 
 // Handler returns the agent API.
 func (a *Agent) Handler() http.Handler {
@@ -71,31 +94,101 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /smb/shares", a.smbSave)
 	mux.HandleFunc("PUT /smb/shares/{name}", a.smbSave)
 	mux.HandleFunc("DELETE /smb/shares/{name}", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, a.SMB.Delete(r.Context(), r.PathValue("name")))
+		err := a.SMB.Delete(r.Context(), r.PathValue("name"))
+		if err == nil {
+			a.Network.Reconcile(r.Context())
+		}
+		respond(w, err)
 	})
-	mux.HandleFunc("GET /smb/users", func(w http.ResponseWriter, r *http.Request) {
-		users, err := a.Users.Users(r.Context())
+	mux.HandleFunc("POST /smb/shares/{name}/permissions", func(w http.ResponseWriter, r *http.Request) {
+		sh := a.SMB.Get(r.Context(), r.PathValue("name"))
+		if sh == nil {
+			fail(w, &valid.NotFound{What: "share " + r.PathValue("name")})
+			return
+		}
+		t, err := smb.StartPermissions(a.Tasks, a.Run, *sh, !a.Demo)
+		if err != nil {
+			fail(w, valid.Errorf("%s", err.Error()))
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"task": t.Info().ID})
+	})
+	mux.HandleFunc("GET /smb/network", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.Network.Info(r.Context()))
+	})
+	mux.HandleFunc("PUT /smb/network", func(w http.ResponseWriter, r *http.Request) {
+		var body smb.NetworkSettings
+		if !decode(w, r, &body) {
+			return
+		}
+		info, err := a.Network.Save(r.Context(), body)
 		if err != nil {
 			fail(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, users)
+		writeJSON(w, http.StatusOK, info)
 	})
-	mux.HandleFunc("POST /smb/users", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Name, Password string }
-		if decode(w, r, &body) {
-			respond(w, a.Users.AddUser(r.Context(), body.Name, body.Password))
+	mux.HandleFunc("POST /smb/network/remove-printers", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.Network.RemovePrinters(r.Context()); err != nil {
+			fail(w, err)
+			return
 		}
+		a.Network.Reconcile(r.Context())
+		writeJSON(w, http.StatusOK, a.Network.Info(r.Context()))
 	})
-	mux.HandleFunc("PUT /smb/users/{name}/password", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Password string }
-		if decode(w, r, &body) {
-			respond(w, a.Users.SetPassword(r.Context(), r.PathValue("name"), body.Password))
+	smbapi.RegisterUserRoutes(mux, "/smb", a.Users)
+	mux.HandleFunc("GET /system/updates", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.Apt.Status())
+	})
+	mux.HandleFunc("POST /system/check", func(w http.ResponseWriter, r *http.Request) {
+		a.startTask(w, "Check for updates on the Proxmox host", func(t *tasks.Task) error {
+			_, err := a.Apt.Check(t)
+			return err
+		})
+	})
+	mux.HandleFunc("POST /system/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Mode string `json:"mode"`
 		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Mode != system.ModeSecurity && body.Mode != system.ModeAll {
+			fail(w, valid.Errorf("mode must be security or all"))
+			return
+		}
+		a.startTask(w, "Update the Proxmox host", func(t *tasks.Task) error {
+			_, err := a.Apt.Upgrade(t, body.Mode)
+			return err
+		})
 	})
-	mux.HandleFunc("DELETE /smb/users/{name}", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, a.Users.DeleteUser(r.Context(), r.PathValue("name")))
+	mux.HandleFunc("POST /system/install", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Packages []string `json:"packages"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		for _, p := range body.Packages {
+			if _, ok := system.Installable[p]; !ok {
+				fail(w, valid.Errorf("package %q cannot be installed from here", p))
+				return
+			}
+		}
+		if len(body.Packages) == 0 {
+			fail(w, valid.Errorf("no packages given"))
+			return
+		}
+		a.startTask(w, "Install "+strings.Join(body.Packages, ", ")+" on the Proxmox host", func(t *tasks.Task) error {
+			if err := a.Apt.Install(t, body.Packages...); err != nil {
+				return err
+			}
+			a.Network.Reconcile(t.Context())
+			return nil
+		})
 	})
+	mux.Handle("GET /tasks", a.Tasks.Handler())
+	mux.Handle("GET /tasks/{id}", a.Tasks.Handler())
 	mux.HandleFunc("GET /nfs/exports", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.NFS.List())
 	})
@@ -147,7 +240,7 @@ func (a *Agent) info(w http.ResponseWriter, r *http.Request) {
 	host, _ := os.Hostname()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	info := Info{Available: true, Version: a.Version, Hostname: host, Samba: a.SMB.Installed(), NFS: a.NFS.Installed(), Services: map[string]string{}}
+	info := Info{Available: true, Version: a.Version, Hostname: host, Samba: a.SMB.Installed(), NFS: a.NFS.Installed(), Services: map[string]string{}, Features: Features}
 	if info.Samba {
 		info.Services["smbd"] = sysexec.ServiceState(ctx, a.Run, "smbd")
 	}
@@ -162,12 +255,35 @@ func (a *Agent) smbSave(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &s) {
 		return
 	}
-	saved, err := a.SMB.Save(r.Context(), r.PathValue("name"), s)
+	old := r.PathValue("name")
+	var prev *smb.Share
+	if old != "" {
+		prev = a.SMB.Get(r.Context(), old)
+	}
+	saved, err := a.SMB.Save(r.Context(), old, s)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, saved)
+	a.Network.Reconcile(r.Context())
+	task := ""
+	if smb.NeedsPermissions(prev, saved) {
+		if t, err := smb.StartPermissions(a.Tasks, a.Run, saved, !a.Demo); err == nil {
+			task = t.Info().ID
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"share": saved, "task": task})
+}
+
+// startTask runs fn as the host's single system task and answers with
+// its id.
+func (a *Agent) startTask(w http.ResponseWriter, title string, fn func(t *tasks.Task) error) {
+	t, err := a.Tasks.Start("system", title, fn)
+	if err != nil {
+		fail(w, valid.Errorf("%s", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"task": t.Info().ID})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

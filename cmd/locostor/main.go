@@ -24,13 +24,18 @@ import (
 	"github.com/Phydran6/LocoStor/internal/auth"
 	"github.com/Phydran6/LocoStor/internal/config"
 	"github.com/Phydran6/LocoStor/internal/demo"
+	"github.com/Phydran6/LocoStor/internal/directory"
 	"github.com/Phydran6/LocoStor/internal/hostagent"
+	"github.com/Phydran6/LocoStor/internal/maintenance"
 	"github.com/Phydran6/LocoStor/internal/nfs"
+	"github.com/Phydran6/LocoStor/internal/notify"
 	"github.com/Phydran6/LocoStor/internal/raid"
 	"github.com/Phydran6/LocoStor/internal/smart"
 	"github.com/Phydran6/LocoStor/internal/smb"
 	"github.com/Phydran6/LocoStor/internal/sysexec"
 	"github.com/Phydran6/LocoStor/internal/sysinfo"
+	"github.com/Phydran6/LocoStor/internal/system"
+	"github.com/Phydran6/LocoStor/internal/tasks"
 	"github.com/Phydran6/LocoStor/internal/tlsutil"
 	"github.com/Phydran6/LocoStor/internal/update"
 	"github.com/Phydran6/LocoStor/web"
@@ -38,6 +43,15 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=1.2.3".
 var version = "dev"
+
+// OAuth app registrations for "Sign in with Microsoft/Google" in the mail
+// assistant, set at build time (release workflow). Users can enter their
+// own when these are empty.
+var (
+	msClientID         = ""
+	googleClientID     = ""
+	googleClientSecret = ""
+)
 
 const usageText = `LocoStor %s - storage management web UI
 
@@ -243,6 +257,7 @@ func cmdHostAgent(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	agent := hostagent.New(version, sysexec.OS{})
+	go agent.Network.Reconcile(ctx)
 	exe, _ := os.Executable()
 	agent.Updater = update.New(update.Options{
 		Repo:    "Phydran6/LocoStor",
@@ -269,6 +284,7 @@ func cmdServe(args []string) error {
 		store       auth.Store
 		sessionFile string
 		host        http.Handler
+		hostHandler http.Handler
 	)
 
 	if *demoMode {
@@ -284,13 +300,24 @@ func cmdServe(args []string) error {
 		run = demo.NewRunner()
 		smbOpts, nfsOpts = env.SMB, env.NFS
 		// A simulated Proxmox host with hand-written shares.
-		host = (&hostagent.Agent{
+		hostNet := smb.NewNetwork(run, env.HostSMBConf, filepath.Join(env.Dir, "host-network.json"), smb.DiscoveryOn, false)
+		hostNet.WSDDDefaults = filepath.Join(env.Dir, "host-wsdd")
+		hostTasks := tasks.New("", version)
+		hostTasks.Exec = demo.Exec
+		hostApt := system.NewApt(filepath.Join(env.Dir, "host-apt.json"), true)
+		hostApt.Demo = true
+		hostHandler = (&hostagent.Agent{
 			Version: version,
 			Run:     run,
 			SMB:     smb.NewInPlace(run, env.HostSMBConf, true),
-			Users:   smb.New(run, smb.Options{}),
+			Users:   smb.NewUsers(run),
+			Network: hostNet,
 			NFS:     nfs.NewKernel(run, env.HostExports, true),
+			Tasks:   hostTasks,
+			Apt:     hostApt,
+			Demo:    true,
 		}).Handler()
+		host = hostHandler
 		procDir, sysDir = env.ProcDir, env.SysDir
 		log.Printf("demo mode: log in as %q with password %q", demo.Username, demo.Password)
 	} else {
@@ -357,25 +384,91 @@ func cmdServe(args []string) error {
 		}
 	}
 
+	taskDir := ""
+	netState := filepath.Join(cfg.DataDir, "smb-network.json")
+	if !*demoMode {
+		taskDir = filepath.Join(cfg.DataDir, "tasks")
+	} else {
+		netState = filepath.Join(filepath.Dir(smbOpts.StatePath), "smb-network.json")
+	}
+	taskMgr := tasks.New(taskDir, version)
+	network := smb.NewNetwork(run, smbOpts.MainConf, netState, smb.DiscoveryAuto, true)
+	if *demoMode {
+		taskMgr.Exec = demo.Exec
+		network.WSDDDefaults = filepath.Join(filepath.Dir(smbOpts.StatePath), "wsdd")
+	}
+
+	apt := system.NewApt(filepath.Join(filepath.Dir(netState), "apt.json"), false)
+	hostClient := hostagent.NewClient(cfg.HostSocket)
+	if *demoMode {
+		apt.Demo = true
+		hostClient.Handler = hostHandler
+	}
+	maint := maintenance.New(filepath.Join(filepath.Dir(netState), "maintenance.json"))
+	maint.Tasks, maint.Apt, maint.Updater, maint.Host = taskMgr, apt, updater, hostClient
+	maint.Packages = []string{"acl", "smbclient"}
+
+	hostname, _ := os.Hostname()
+	stateDir := filepath.Dir(netState)
+	notifier := notify.New(filepath.Join(stateDir, "notify.json"), filepath.Join(stateDir, "notify-history.json"), hostname)
+	notifier.Clients = notify.OAuthClients{MicrosoftID: msClientID, GoogleID: googleClientID, GoogleSecret: googleClientSecret}
+	maint.Notify = func(kind, severity, title, body string) {
+		if notifier.Events().Updates {
+			notifier.Notify(kind, severity, title, body)
+		}
+	}
+
+	smartMgr := smart.New(run, cfg.SmartDevices)
+	raidRead := func() ([]raid.Array, error) { return raid.Read(procDir, sysDir) }
+
+	dirFiles := directory.DefaultFiles(stateDir)
+	if *demoMode {
+		dirFiles = directory.Files{SMBConf: smbOpts.MainConf, Krb5: filepath.Join(stateDir, "krb5.conf"), NSSwitch: filepath.Join(stateDir, "nsswitch.conf"),
+			Nslcd: filepath.Join(stateDir, "nslcd.conf"), Debconf: filepath.Join(stateDir, "debconf.txt"), StatePath: filepath.Join(stateDir, "directory.json")}
+	}
+	dir := directory.New(run, dirFiles)
+	dir.Apt, dir.Tasks, dir.Demo = apt, taskMgr, *demoMode
+
 	server := &api.Server{
-		Version: version,
-		Demo:    *demoMode,
-		Repo:    cfg.UpdateRepo,
-		Auth:    auth.New(store, sessionFile),
-		SMB:     smb.New(run, smbOpts),
-		NFS:     nfs.New(run, nfsOpts),
-		SMART:   smart.New(run, cfg.SmartDevices),
-		Updater: updater,
-		RAID:    func() ([]raid.Array, error) { return raid.Read(procDir, sysDir) },
-		SysInfo: sysInfo,
-		Web:     web.Dist(),
-		Host:    host,
+		Directory:   dir,
+		Notify:      notifier,
+		Maintenance: maint,
+		Version:     version,
+		Demo:        *demoMode,
+		Repo:        cfg.UpdateRepo,
+		Auth:        auth.New(store, sessionFile),
+		SMB:         smb.New(run, smbOpts),
+		Users:       smb.NewUsers(run),
+		Network:     network,
+		Tasks:       taskMgr,
+		Run:         run,
+		NFS:         nfs.New(run, nfsOpts),
+		SMART:       smart.New(run, cfg.SmartDevices),
+		Updater:     updater,
+		RAID:        func() ([]raid.Array, error) { return raid.Read(procDir, sysDir) },
+		SysInfo:     sysInfo,
+		Web:         web.Dist(),
+		Host:        host,
 	}
 	srv.Handler = server.Handler()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go updater.RunPeriodic(ctx, 6*time.Hour)
+	// Samba only runs and announces itself while something is shared.
+	go network.Reconcile(ctx)
+	go maint.RunPeriodic(ctx)
+	monitor := &notify.Monitor{
+		N:    notifier,
+		RAID: raidRead,
+		SMART: func(ctx context.Context) ([]smart.Disk, error) {
+			d, _, err := smartMgr.Disks(ctx, false)
+			return d, err
+		},
+		FS:   func() []sysinfo.Filesystem { return sysInfo().Filesystems },
+		Path: filepath.Join(stateDir, "monitor.json"),
+	}
+	go monitor.Run(ctx)
 
 	if useTLS {
 		startRedirects(cfg.HTTPRedirect, cfg.Listen)

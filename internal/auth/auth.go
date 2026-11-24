@@ -49,6 +49,8 @@ type Credentials struct {
 	PasswordHash  string
 	TOTPSecret    string   // empty = MFA off
 	RecoveryCodes []string // sha256 hex of unused recovery codes
+	Passkeys      []Passkey
+	UserHandle    string // WebAuthn user id (base64url)
 }
 
 // Store persists credentials (the config file).
@@ -69,6 +71,8 @@ type Manager struct {
 	allFails  []time.Time
 	lastStep  int64  // last accepted TOTP step (replay protection)
 	setupTOTP string // secret being enrolled, not yet confirmed
+
+	challenges map[string]challenge // WebAuthn, keyed by base64url value
 }
 
 type pendingMFA struct {
@@ -84,6 +88,7 @@ func New(store Store, sessionFile string) *Manager {
 		sessions:    map[string]time.Time{},
 		pending:     map[string]pendingMFA{},
 		fails:       map[string][]time.Time{},
+		challenges:  map[string]challenge{},
 	}
 	if sessionFile != "" {
 		var saved map[string]time.Time
@@ -476,15 +481,19 @@ func (m *Manager) RegenerateRecovery(password, code string) ([]string, error) {
 
 // Info describes the account for the settings page.
 type Info struct {
-	Username          string `json:"username"`
-	MFAEnabled        bool   `json:"mfa_enabled"`
-	RecoveryCodesLeft int    `json:"recovery_codes_left"`
+	Username          string        `json:"username"`
+	MFAEnabled        bool          `json:"mfa_enabled"`
+	RecoveryCodesLeft int           `json:"recovery_codes_left"`
+	Passkeys          []PasskeyInfo `json:"passkeys"`
 }
+
+// HasPasskeys reports whether passkey login is possible.
+func (m *Manager) HasPasskeys() bool { return len(m.store.Credentials().Passkeys) > 0 }
 
 // Info returns account details.
 func (m *Manager) Info() Info {
 	c := m.store.Credentials()
-	return Info{Username: c.Username, MFAEnabled: c.TOTPSecret != "", RecoveryCodesLeft: len(c.RecoveryCodes)}
+	return Info{Username: c.Username, MFAEnabled: c.TOTPSecret != "", RecoveryCodesLeft: len(c.RecoveryCodes), Passkeys: m.Passkeys()}
 }
 
 // --- recovery codes -------------------------------------------------------

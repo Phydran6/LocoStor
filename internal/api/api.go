@@ -14,11 +14,16 @@ import (
 	"time"
 
 	"github.com/Phydran6/LocoStor/internal/auth"
+	"github.com/Phydran6/LocoStor/internal/directory"
+	"github.com/Phydran6/LocoStor/internal/maintenance"
 	"github.com/Phydran6/LocoStor/internal/nfs"
+	"github.com/Phydran6/LocoStor/internal/notify"
 	"github.com/Phydran6/LocoStor/internal/raid"
 	"github.com/Phydran6/LocoStor/internal/smart"
 	"github.com/Phydran6/LocoStor/internal/smb"
+	"github.com/Phydran6/LocoStor/internal/sysexec"
 	"github.com/Phydran6/LocoStor/internal/sysinfo"
+	"github.com/Phydran6/LocoStor/internal/tasks"
 	"github.com/Phydran6/LocoStor/internal/update"
 	"github.com/Phydran6/LocoStor/internal/valid"
 )
@@ -30,6 +35,15 @@ type Server struct {
 	Repo    string // GitHub owner/name, for links in the UI
 	Auth    *auth.Manager
 	SMB     *smb.Manager
+	Users   *smb.UserManager
+	Network *smb.Network
+	Tasks   *tasks.Manager
+	// Maintenance is the patch automation (system + LocoStor updates).
+	Maintenance *maintenance.Manager
+	Notify      *notify.Manager
+	Directory   *directory.Manager
+	// Run executes system commands (folder permissions, ...).
+	Run     sysexec.Runner
 	NFS     *nfs.Manager
 	SMART   *smart.Manager
 	Updater *update.Updater
@@ -52,6 +66,8 @@ func (s *Server) Handler() http.Handler {
 	public.HandleFunc("POST /api/auth/mfa", s.loginMFA)
 	public.HandleFunc("POST /api/auth/logout", s.logout)
 	public.HandleFunc("GET /api/auth/me", s.me)
+	public.HandleFunc("POST /api/auth/passkey/begin", s.passkeyLoginBegin)
+	public.HandleFunc("POST /api/auth/passkey/finish", s.passkeyLoginFinish)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/auth/account", s.account)
@@ -61,19 +77,20 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/auth/totp/enable", s.totpEnable)
 	api.HandleFunc("POST /api/auth/totp/disable", s.totpDisable)
 	api.HandleFunc("POST /api/auth/recovery", s.recoveryRegenerate)
+	api.HandleFunc("POST /api/auth/passkeys/begin", s.passkeyRegisterBegin)
+	api.HandleFunc("POST /api/auth/passkeys/finish", s.passkeyRegisterFinish)
+	api.HandleFunc("POST /api/auth/passkeys/delete", s.passkeyDelete)
 	api.HandleFunc("GET /api/dashboard", s.dashboard)
 	api.HandleFunc("GET /api/about", s.about)
 
-	api.HandleFunc("GET /api/smb/shares", s.smbShares)
-	api.HandleFunc("POST /api/smb/shares", s.smbSave)
-	api.HandleFunc("PUT /api/smb/shares/{name}", s.smbSave)
-	api.HandleFunc("DELETE /api/smb/shares/{name}", s.smbDelete)
-	api.HandleFunc("GET /api/smb/external", s.smbExternal)
-	api.HandleFunc("POST /api/smb/external/adopt", s.smbAdopt)
-	api.HandleFunc("GET /api/smb/users", s.smbUsers)
-	api.HandleFunc("POST /api/smb/users", s.smbAddUser)
-	api.HandleFunc("PUT /api/smb/users/{name}/password", s.smbSetPassword)
-	api.HandleFunc("DELETE /api/smb/users/{name}", s.smbDeleteUser)
+	s.smbRoutes(api)
+	s.systemRoutes(api)
+	s.notifyRoutes(api)
+	s.directoryRoutes(api)
+	if s.Tasks != nil {
+		api.Handle("/api/tasks", http.StripPrefix("/api", s.Tasks.Handler()))
+		api.Handle("/api/tasks/", http.StripPrefix("/api", s.Tasks.Handler()))
+	}
 
 	api.HandleFunc("GET /api/nfs/exports", s.nfsExports)
 	api.HandleFunc("POST /api/nfs/exports", s.nfsSave)
@@ -276,87 +293,6 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- SMB ---
-
-func (s *Server) smbShares(w http.ResponseWriter, r *http.Request) {
-	shares, err := s.SMB.Shares()
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, shares)
-}
-
-func (s *Server) smbSave(w http.ResponseWriter, r *http.Request) {
-	var sh smb.Share
-	if err := decode(r, &sh); err != nil {
-		fail(w, err)
-		return
-	}
-	saved, err := s.SMB.Save(r.Context(), r.PathValue("name"), sh)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, saved)
-}
-
-func (s *Server) smbDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.SMB.Delete(r.Context(), r.PathValue("name")); err != nil {
-		fail(w, err)
-		return
-	}
-	ok(w)
-}
-
-func (s *Server) smbUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := s.SMB.Users(r.Context())
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, users)
-}
-
-func (s *Server) smbAddUser(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name     string `json:"name"`
-		Password string `json:"password"`
-	}
-	if err := decode(r, &body); err != nil {
-		fail(w, err)
-		return
-	}
-	if err := s.SMB.AddUser(r.Context(), body.Name, body.Password); err != nil {
-		fail(w, err)
-		return
-	}
-	ok(w)
-}
-
-func (s *Server) smbSetPassword(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Password string `json:"password"`
-	}
-	if err := decode(r, &body); err != nil {
-		fail(w, err)
-		return
-	}
-	if err := s.SMB.SetPassword(r.Context(), r.PathValue("name"), body.Password); err != nil {
-		fail(w, err)
-		return
-	}
-	ok(w)
-}
-
-func (s *Server) smbDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if err := s.SMB.DeleteUser(r.Context(), r.PathValue("name")); err != nil {
-		fail(w, err)
-		return
-	}
-	ok(w)
-}
-
 // --- NFS ---
 
 func (s *Server) nfsExports(w http.ResponseWriter, r *http.Request) {
@@ -404,31 +340,6 @@ func (s *Server) nfsDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- existing shares defined outside LocoStor ---
-
-func (s *Server) smbExternal(w http.ResponseWriter, r *http.Request) {
-	list, err := s.SMB.External(r.Context())
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, list)
-}
-
-func (s *Server) smbAdopt(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name string `json:"name"`
-	}
-	if err := decode(r, &body); err != nil {
-		fail(w, err)
-		return
-	}
-	sh, err := s.SMB.Adopt(r.Context(), body.Name)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, sh)
-}
 
 func (s *Server) nfsExternal(w http.ResponseWriter, r *http.Request) {
 	list, err := s.NFS.External()

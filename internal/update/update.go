@@ -84,8 +84,10 @@ type Updater struct {
 	prevMod     time.Time
 	prevVersion string
 
-	progress Progress
-	bytes    atomic.Int64
+	progress  Progress
+	bytes     atomic.Int64
+	hook      func(string) // receives step messages (InstallLatest)
+	noRestart bool
 }
 
 // New creates an Updater.
@@ -103,6 +105,9 @@ func New(opts Options) *Updater {
 	u.status = Status{Current: opts.Current}
 	return u
 }
+
+// Current returns the running version.
+func (u *Updater) Current() string { return u.opts.Current }
 
 // AssetName returns the binary asset name for the running architecture.
 func AssetName() string { return "locostor-linux-" + runtime.GOARCH }

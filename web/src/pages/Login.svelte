@@ -2,6 +2,23 @@
   import Icon from '../components/Icon.svelte';
   import logo from '../assets/logo.png';
   import { api, session } from '../lib/api.svelte.js';
+  import { getPasskey, passkeyProblem } from '../lib/passkey.js';
+
+  const passkeyIssue = passkeyProblem();
+
+  async function passkeyLogin() {
+    busy = true;
+    error = '';
+    try {
+      const { publicKey } = await api.post('/api/auth/passkey/begin');
+      const response = await getPasskey(publicKey);
+      Object.assign(session, await api.post('/api/auth/passkey/finish', response));
+    } catch (err) {
+      error = err.name === 'NotAllowedError' ? 'Passkey login was cancelled.' : err.message;
+    } finally {
+      busy = false;
+    }
+  }
 
   let username = $state('');
   let password = $state('');
@@ -89,6 +106,12 @@
     </button>
     {#if mfaToken}
       <button type="button" class="w-full text-center text-xs text-zinc-500 hover:text-zinc-300" onclick={back}>Back</button>
+    {:else if session.passkeys}
+      <div class="flex items-center gap-2 py-1 text-xs text-zinc-600"><span class="h-px flex-1 bg-ink-800"></span>or<span class="h-px flex-1 bg-ink-800"></span></div>
+      <button type="button" class="btn w-full border border-ink-700 bg-ink-900 py-2 text-zinc-200 hover:bg-ink-800" onclick={passkeyLogin} disabled={busy || !!passkeyIssue}>
+        <Icon name="fingerprint" size={16} />Sign in with a passkey
+      </button>
+      {#if passkeyIssue}<p class="text-center text-xs text-zinc-500">{passkeyIssue}</p>{/if}
     {/if}
   </form>
 </div>

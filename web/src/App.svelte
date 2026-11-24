@@ -4,6 +4,7 @@
   import Topbar from './components/Topbar.svelte';
   import Toasts from './components/Toasts.svelte';
   import ConfirmHost from './components/ConfirmHost.svelte';
+  import TaskViewer from './components/TaskViewer.svelte';
   import Login from './pages/Login.svelte';
   import Dashboard from './pages/Dashboard.svelte';
   import SmbShares from './pages/SmbShares.svelte';
@@ -14,6 +15,8 @@
   import Update from './pages/Update.svelte';
   import Settings from './pages/Settings.svelte';
   import About from './pages/About.svelte';
+  import Notifications from './pages/Notifications.svelte';
+  import Directory from './pages/Directory.svelte';
   import { api, session } from './lib/api.svelte.js';
   import { route } from './lib/router.svelte.js';
   import { loadUpdateStatus } from './lib/ui.svelte.js';
@@ -33,6 +36,13 @@
       items: [
         { path: '/raid', title: 'RAID', icon: 'layers', component: Raid },
         { path: '/smart', title: 'SMART', icon: 'disk', component: Smart },
+      ],
+    },
+    {
+      label: 'Integrations',
+      items: [
+        { path: '/integrations/notifications', title: 'Notifications', icon: 'bell', component: Notifications },
+        { path: '/integrations/directory', title: 'AD / LDAP', icon: 'building', component: Directory },
       ],
     },
     {
@@ -87,3 +97,4 @@
 
 <Toasts />
 <ConfirmHost />
+{#if session.logged_in}<TaskViewer />{/if}

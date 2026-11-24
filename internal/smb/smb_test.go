@@ -68,7 +68,11 @@ func TestValidation(t *testing.T) {
 		{Name: "a]b", Path: "/x"},
 		{Name: "ok", Path: "relative"},
 		{Name: "ok", Path: "/x", Comment: "line\n[inject]"},
-		{Name: "ok", Path: "/x", ValidUsers: []string{"a b"}},
+		{Name: "ok", Path: "/x", ValidUsers: []string{"a,b"}},
+		{Name: "ok", Path: "/x", Everyone: LevelNone},
+		{Name: "ok", Path: "/x", Everyone: "all"},
+		{Name: "ok", Path: "/x", Everyone: LevelRead, Access: []ACE{{Name: "bob", Level: "admin"}}},
+		{Name: "ok", Path: "/x", Everyone: LevelRead, Access: []ACE{{Name: "bob", Level: LevelRead}, {Name: "Bob", Level: LevelWrite}}},
 	}
 	for _, s := range bad {
 		if _, err := m.Save(ctx, "", s); !valid.Is(err) {

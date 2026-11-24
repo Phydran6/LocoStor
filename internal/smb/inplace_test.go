@@ -60,8 +60,8 @@ func TestInPlaceEditKeepsEverythingElse(t *testing.T) {
 	ctx := context.Background()
 	scan := p.List(ctx)
 	nas := scan.Shares[1].Share
-	nas.ReadOnly = true
-	nas.ValidUsers = []string{"alice", "anna"}
+	nas.Everyone = LevelNone
+	nas.Access = []ACE{{Name: "alice", Level: LevelRead}, {Name: "anna", Level: LevelRead}}
 	if _, err := p.Save(ctx, "nas2", nas); err != nil {
 		t.Fatal(err)
 	}

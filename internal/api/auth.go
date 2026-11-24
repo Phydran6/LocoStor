@@ -73,6 +73,7 @@ func (s *Server) writeMe(w http.ResponseWriter, loggedIn bool) {
 		"logged_in": loggedIn,
 		"version":   s.Version,
 		"demo":      s.Demo,
+		"passkeys":  s.Auth.HasPasskeys(),
 	})
 }
 
@@ -189,4 +190,86 @@ func (s *Server) recoveryRegenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recovery_codes": codes})
+}
+
+// --- passkeys ---
+
+func (s *Server) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	opts, err := s.Auth.BeginPasskeyLogin(auth.ClientIP(r), r.Header.Get("Origin"))
+	if err != nil {
+		if errors.Is(err, auth.ErrThrottled) {
+			authError(w, err)
+			return
+		}
+		fail(w, valid.Errorf("%s", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"publicKey": opts})
+}
+
+func (s *Server) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	var body auth.PasskeyResponse
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	token, err := s.Auth.FinishPasskeyLogin(auth.ClientIP(r), body)
+	if err != nil {
+		authError(w, err)
+		return
+	}
+	auth.SetCookie(w, r, token)
+	s.writeMe(w, true)
+}
+
+func (s *Server) passkeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	if s.denyInDemo(w) {
+		return
+	}
+	opts, err := s.Auth.BeginPasskeyRegistration(body.Password, r.Header.Get("Origin"))
+	if err != nil {
+		accountError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"publicKey": opts})
+}
+
+func (s *Server) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name     string               `json:"name"`
+		Response auth.PasskeyResponse `json:"response"`
+	}
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	info, err := s.Auth.FinishPasskeyRegistration(body.Name, body.Response)
+	if err != nil {
+		fail(w, valid.Errorf("%s", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) passkeyDelete(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID       string `json:"id"`
+		Password string `json:"password"`
+	}
+	if err := decode(r, &body); err != nil {
+		fail(w, err)
+		return
+	}
+	if err := s.Auth.DeletePasskey(body.Password, body.ID); err != nil {
+		accountError(w, err)
+		return
+	}
+	ok(w)
 }
