@@ -86,6 +86,11 @@ can also pin the list in `/etc/locostor/config.json`:
 
 | Problem | Fix |
 | --- | --- |
+| Share is read only although "read & write" is set | Turn on *Fix folder permissions* on the share (or press the shield button). The folder on the RAID usually belongs to `root`. |
+| SMB user cannot log in | *SMB users → Test login* shows the reason. Users of the container and of the Proxmox host are separate – create the user on the server that has the share. |
+| The NAS shows up twice in the network (e.g. LOCOSTOR and NAS2) | Both the host and the container run Samba. Set the name under *SMB shares → In the network*; with *Automatic* the container only appears while it shares something. |
+| Passkey button is disabled | Passkeys need HTTPS with a trusted certificate and a host name, not an IP address. |
+| Domain join fails | The container's DNS server must be the domain controller: Proxmox → container → DNS. |
 | "container is unprivileged" | Create a new container with *Unprivileged container* unticked. |
 | `nfs-ganesha` fails to start | `journalctl -u nfs-ganesha`. With AppArmor errors add `lxc.apparmor.profile: unconfined` to the container config. |
 | NFSv3 clients cannot mount | NFSv3 needs `rpcbind`: `apt-get install rpcbind`. NFSv4 works without it. |

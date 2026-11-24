@@ -12,6 +12,7 @@ import (
 
 	"github.com/Phydran6/LocoStor/internal/nfs"
 	"github.com/Phydran6/LocoStor/internal/smb"
+	"github.com/Phydran6/LocoStor/internal/tasks"
 )
 
 type okRunner struct{}
@@ -29,8 +30,11 @@ func TestAgentThroughProxy(t *testing.T) {
 		Version: "1.0.0",
 		Run:     okRunner{},
 		SMB:     smb.NewInPlace(okRunner{}, smbConf, true),
-		Users:   smb.New(okRunner{}, smb.Options{}),
+		Users:   smb.NewUsers(okRunner{}),
+		Network: smb.NewNetwork(okRunner{}, smbConf, filepath.Join(dir, "net.json"), smb.DiscoveryOn, false),
 		NFS:     nfs.NewKernel(okRunner{}, exports, true),
+		Tasks:   tasks.New("", "1.0.0"),
+		Demo:    true,
 	}
 	// Unix socket paths are limited to ~100 bytes; keep it short.
 	sockDir, err := os.MkdirTemp("", "lsa")
@@ -70,6 +74,19 @@ func TestAgentThroughProxy(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(smbConf); !strings.Contains(string(data), "read only = yes") || !strings.Contains(string(data), "workgroup = W") {
 		t.Errorf("host smb.conf not edited in place:\n%s", data)
+	}
+	rec = call("PUT", "/smb/shares/data", `{"name":"data","path":"/srv/data","browseable":true,"enabled":true,"everyone":"read","access":[{"name":"alice","level":"write"},{"name":"@kids","level":"deny"}],"guest":"none","fix_permissions":true,"options":[]}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"task":"`) {
+		t.Fatalf("edit with access list: %d %s", rec.Code, rec.Body)
+	}
+	if data, _ := os.ReadFile(smbConf); !strings.Contains(string(data), "write list = alice") || !strings.Contains(string(data), "invalid users = @kids") || !strings.Contains(string(data), "force group = locostor") {
+		t.Errorf("access not written:\n%s", data)
+	}
+	if rec := call("GET", "/smb/network", ""); !strings.Contains(rec.Body.String(), `"workgroup":"W"`) {
+		t.Errorf("network: %s", rec.Body)
+	}
+	if rec := call("GET", "/tasks", ""); !strings.Contains(rec.Body.String(), "Folder permissions") {
+		t.Errorf("tasks: %s", rec.Body)
 	}
 	if rec := call("PUT", "/smb/shares/data", `{"name":"data","path":"/etc","enabled":true}`); rec.Code != 400 {
 		t.Errorf("system directory accepted: %d %s", rec.Code, rec.Body)

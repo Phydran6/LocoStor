@@ -7,6 +7,53 @@
   import PageHeader from '../components/PageHeader.svelte';
   import { api, session } from '../lib/api.svelte.js';
   import { toast, theme, setTheme } from '../lib/ui.svelte.js';
+  import { createPasskey, passkeyProblem } from '../lib/passkey.js';
+  import { dateTime } from '../lib/format.js';
+
+  // --- passkeys ---
+  const passkeyIssue = passkeyProblem();
+  let pkMode = $state(''); // 'add' | 'delete'
+  let pkName = $state('');
+  let pkPw = $state('');
+  let pkTarget = $state(null);
+  let pkBusy = $state(false);
+
+  function openPasskey(mode, target = null) {
+    pkMode = mode;
+    pkTarget = target;
+    pkPw = '';
+    pkName = mode === 'add' ? guessDevice() : '';
+  }
+  function guessDevice() {
+    const ua = navigator.userAgent;
+    if (/iPhone|iPad/.test(ua)) return 'iPhone / iPad';
+    if (/Android/.test(ua)) return 'Android';
+    if (/Mac/.test(ua)) return 'Mac';
+    if (/Windows/.test(ua)) return 'Windows Hello';
+    return 'Passkey';
+  }
+  async function passkeySubmit(e) {
+    e.preventDefault();
+    pkBusy = true;
+    try {
+      if (pkMode === 'add') {
+        const { publicKey } = await api.post('/api/auth/passkeys/begin', { password: pkPw });
+        const response = await createPasskey(publicKey);
+        await api.post('/api/auth/passkeys/finish', { name: pkName, response });
+        toast.success('Passkey added – you can now sign in with it');
+      } else {
+        await api.post('/api/auth/passkeys/delete', { id: pkTarget.id, password: pkPw });
+        toast.success(`Passkey "${pkTarget.name}" removed`);
+      }
+      pkMode = '';
+      loadAccount();
+      session.passkeys = true;
+    } catch (err) {
+      toast.error(err.name === 'NotAllowedError' ? 'Cancelled or timed out.' : err.name === 'InvalidStateError' ? 'This device already has a passkey for LocoStor.' : err.message);
+    } finally {
+      pkBusy = false;
+    }
+  }
 
   let account = $state(null);
 
@@ -186,6 +233,36 @@
     </div>
   </section>
 
+  <section class="card lg:col-span-2">
+    <div class="card-header">
+      <h2 class="card-title flex items-center gap-2"><Icon name="fingerprint" size={16} />Passkeys</h2>
+      {#if account}<Badge tone={account.passkeys?.length ? 'ok' : 'muted'} dot>{account.passkeys?.length ? `${account.passkeys.length} registered` : 'none'}</Badge>{/if}
+    </div>
+    <div class="space-y-3 p-4 text-sm">
+      <p class="text-zinc-600 dark:text-zinc-300">
+        Sign in with Face ID, Touch ID, Windows Hello, your phone or a security key – no password, phishing-proof. A passkey replaces password and
+        authentication code.
+      </p>
+      {#if account?.passkeys?.length}
+        <ul class="divide-y divide-zinc-100 rounded-md border border-zinc-200 dark:divide-ink-800 dark:border-ink-800">
+          {#each account.passkeys as pk}
+            <li class="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2">
+              <Icon name="fingerprint" size={16} class="text-zinc-400" />
+              <span class="font-medium">{pk.name}</span>
+              <span class="mono text-xs text-zinc-500">{pk.rp_id}</span>
+              <span class="ml-auto text-xs text-zinc-500">added {dateTime(pk.created)} · last used {dateTime(pk.last_used)}</span>
+              <button class="btn-icon hover:!text-red-600" onclick={() => openPasskey('delete', pk)} aria-label="Remove passkey {pk.name}"><Icon name="trash" size={15} /></button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if passkeyIssue}
+        <p class="flex items-start gap-1.5 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"><Icon name="info" size={14} class="mt-px" />{passkeyIssue}</p>
+      {/if}
+      <button class="btn btn-primary" onclick={() => openPasskey('add')} disabled={!!passkeyIssue || session.demo}><Icon name="plus" size={16} />Add passkey</button>
+    </div>
+  </section>
+
   <section class="card">
     <div class="card-header"><h2 class="card-title">Password</h2></div>
     <form class="space-y-3 p-4" onsubmit={changePassword}>
@@ -277,5 +354,25 @@
   {#snippet footer()}
     <button class="btn btn-secondary" onclick={() => (confirmMode = '')}>Cancel</button>
     <button class="btn {confirmMode === 'disable' ? 'btn-danger' : 'btn-primary'}" form="mfa-confirm" disabled={mfaBusy}>Confirm</button>
+  {/snippet}
+</Modal>
+
+<Modal title={pkMode === 'add' ? 'Add passkey' : `Remove passkey "${pkTarget?.name}"`} open={!!pkMode} onclose={() => (pkMode = '')}>
+  <form id="pk-form" class="space-y-3" onsubmit={passkeySubmit}>
+    {#if pkMode === 'add'}
+      <div>
+        <label class="label" for="pk-name">Name</label>
+        <input id="pk-name" class="input" bind:value={pkName} maxlength="64" required />
+        <p class="hint">To recognize it later, e.g. "iPhone" or "YubiKey".</p>
+      </div>
+    {/if}
+    <div>
+      <label class="label" for="pk-pw">Current password</label>
+      <input id="pk-pw" class="input" type="password" bind:value={pkPw} required autocomplete="current-password" />
+    </div>
+  </form>
+  {#snippet footer()}
+    <button class="btn btn-secondary" onclick={() => (pkMode = '')}>Cancel</button>
+    <button class="btn {pkMode === 'delete' ? 'btn-danger' : 'btn-primary'}" form="pk-form" disabled={pkBusy}>{pkMode === 'add' ? 'Continue' : 'Remove'}</button>
   {/snippet}
 </Modal>

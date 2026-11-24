@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-24
+
+### Fixed
+
+- **SMB shares were read only no matter how they were set up**: Samba allowed writing, but the share folder (usually `root:root 755`) did not. New option *Fix folder permissions* (on by default for new shares): the folder gets read/write rights for the group `locostor` via POSIX ACLs (fallback: group ownership + group bits), new files inherit them, and Samba sessions use this group (`force group`). Who may read or write is decided only by the share settings. Shares where the folder would block writing show a warning with a *Fix now* button
+- **SMB users**: creating a user now checks that it really shows up in Samba's user database, enables the account and handles an existing group of the same name; the list shows why a user cannot log in (Linux account missing, account disabled) with a *Repair* button
+- Group list for share access also shows domain groups with high IDs
+
+### Added
+
+- **Share access per user and group**: *read & write*, *read only* or *denied* for every user and group (`@group`), plus a default for all other SMB users and for guests – rendered as `read list`, `write list`, `invalid users` and `valid users`; existing shares (also on the Proxmox host) are read back the same way
+- **Test login** for SMB users: logs in to the local Samba like a Windows PC and lists the shares the user sees, with an explanation for errors
+- Enable/disable SMB users
+- **Samba in the network**: set the server name (`\\NAS2`), workgroup and description for the container and the Proxmox host; *Automatic* visibility (default in the container) announces the server only while something is shared – without shares the container's Samba is stopped and no longer shows up as a second server; *Always visible* and *Hidden* modes; remove the default printer shares; WS-Discovery (`wsdd`) is configured with the Samba name
+- **Patch automation**: a daily run (time configurable) installs updates of the container (`apt-get update` + `upgrade`, or security updates only), checks or updates the Proxmox host (`dist-upgrade`), keeps the host agent in sync and installs new LocoStor releases. *Update now* runs the same on demand
+- **Live terminal** for updates and other long tasks (folder permissions, domain join, package installs): output streams into the web UI like a shell and survives page reloads and LocoStor's own restart; task log with all recent runs
+- **Notifications** (Integrations → Notifications): RAID degraded/rebuilding/failed/recovered, SMART warnings and failing disks, disk temperature, full filesystems and update results
+  - E-mail assistant: detects the provider from the address (also Microsoft 365 / Google Workspace on own domains via MX, others via the Thunderbird database) with presets for Microsoft 365/Outlook.com, Gmail, WEB.DE, GMX, Telekom, IONOS, STRATO, iCloud, Yahoo, Posteo, mailbox.org, freenet
+  - *Sign in with Microsoft* (device code) and *Sign in with Google* – no mail password stored; app registrations can be built into releases or entered by the user
+  - Telegram: create a bot with @BotFather, paste the token, open one link (or scan the QR code) – the chat is detected automatically; groups work too
+- **Passkeys**: sign in with Face ID, Touch ID, Windows Hello, a phone or a security key (WebAuthn, ES256/EdDSA/RS256); manage them under Settings
+- **Active Directory and LDAP** (Integrations → AD / LDAP): join an AD domain as member server (winbind, Kerberos) or use OpenLDAP with the Samba schema (ldapsam + nslcd); packages are installed and the steps shown live
+- **Integrations** menu section
+- Repository automation: Dependabot (daily, merged automatically after CI), a daily vulnerability scan of the latest release binary that builds a patch release by itself when Go or a module has a security fix, and an issue when that is not enough
+
+### Changed
+
+- Releases are built with the newest Go patch version (the build used Go 1.26.0 so far, which had known vulnerabilities in the standard library); Go modules updated
+- The installer adds `acl`, `smbclient` and `wsdd`; the host agent installs `acl` if missing
+- The host agent reports its features; the UI asks to update an older agent before editing access rights
+
 ## [0.4.0] - 2026-10-04
 
 ### Added
@@ -86,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer script, systemd unit and Proxmox setup guide
 - GitHub Actions for CI and releases (linux/amd64, linux/arm64)
 
-[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Phydran6/LocoStor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Phydran6/LocoStor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Phydran6/LocoStor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Phydran6/LocoStor/compare/v0.1.0...v0.2.0

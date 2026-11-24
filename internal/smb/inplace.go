@@ -80,6 +80,9 @@ func (p *InPlace) describe(sec section) HostShare {
 			h.Editable, h.Reason = false, err.Error()
 		}
 	}
+	if !p.skipPathCheck {
+		h.Warnings = pathWarnings(h.Share)
+	}
 	return h
 }
 
@@ -139,6 +142,12 @@ func (p *InPlace) Save(ctx context.Context, oldName string, s Share) (Share, err
 		}
 	}
 
+	if s.FixPermissions {
+		// "force group" must name an existing group, or logins fail.
+		if err := EnsureGroup(ctx, p.run); err != nil {
+			return s, err
+		}
+	}
 	var b strings.Builder
 	if oldName == "" {
 		data, err := os.ReadFile(p.mainConf)
@@ -195,6 +204,17 @@ func (p *InPlace) Delete(ctx context.Context, name string) error {
 	return p.write(ctx, sec.file, data, strings.Join(next, "\n"))
 }
 
+// Get returns the share name as currently configured.
+func (p *InPlace) Get(ctx context.Context, name string) *Share {
+	for _, s := range p.List(ctx).Shares {
+		if strings.EqualFold(s.Name, name) {
+			sh := s.Share
+			return &sh
+		}
+	}
+	return nil
+}
+
 func findSection(secs []section, name string) *section {
 	var found *section
 	for i := range secs {
@@ -212,6 +232,10 @@ func splitLines(data []byte) []string {
 // write validates the new file content with testparm, keeps a backup, writes
 // it and reloads Samba. If Samba rejects the result, the old file is restored.
 func (p *InPlace) write(ctx context.Context, file string, original []byte, content string) error {
+	return writeChecked(ctx, p.run, file, original, content)
+}
+
+func writeChecked(ctx context.Context, run sysexec.Runner, file string, original []byte, content string) error {
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
@@ -225,7 +249,7 @@ func (p *InPlace) write(ctx context.Context, file string, original []byte, conte
 	if err != nil {
 		return err
 	}
-	if out, err := p.run.Run(ctx, "", "testparm", "-s", "--suppress-prompt", tmp.Name()); err != nil {
+	if out, err := run.Run(ctx, "", "testparm", "-s", "--suppress-prompt", tmp.Name()); err != nil {
 		return valid.Errorf("Samba rejected the change: %s", firstLine(out, err))
 	}
 
@@ -239,9 +263,9 @@ func (p *InPlace) write(ctx context.Context, file string, original []byte, conte
 	if err := fsutil.WriteFileAtomic(file, []byte(content), mode); err != nil {
 		return err
 	}
-	if err := reloadSamba(ctx, p.run); err != nil {
+	if err := reloadSamba(ctx, run); err != nil {
 		_ = fsutil.WriteFileAtomic(file, original, mode)
-		_ = reloadSamba(ctx, p.run)
+		_ = reloadSamba(ctx, run)
 		return fmt.Errorf("change reverted: %w", err)
 	}
 	return nil

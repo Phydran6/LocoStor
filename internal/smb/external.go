@@ -46,6 +46,7 @@ var structuredKeys = map[string]bool{
 	"path": true, "directory": true, "comment": true, "readonly": true, "writable": true,
 	"writeable": true, "writeok": true, "browseable": true, "browsable": true,
 	"guestok": true, "public": true, "validusers": true, "available": true,
+	"readlist": true, "writelist": true, "invalidusers": true,
 }
 
 // dangerousOption reports parameters that run programs as root (preexec,
@@ -85,6 +86,9 @@ func validateOptions(s *Share) error {
 		if dangerousOption(n) {
 			return valid.Errorf("option %q is not allowed: it can run commands or change Samba's own files", o.Key)
 		}
+		if n == "forcegroup" && s.FixPermissions {
+			return valid.Errorf("option %q conflicts with \"fix folder permissions\" - turn one of them off", o.Key)
+		}
 		if seen[n] {
 			return valid.Errorf("option %q is set twice", o.Key)
 		}
@@ -108,7 +112,9 @@ func parseBool(v string, def bool) bool {
 // shareFromSection maps smb.conf parameters to a Share. Samba defaults
 // apply for missing values (read only = yes, browseable = yes).
 func shareFromSection(sec section) Share {
-	s := Share{Name: sec.name, ReadOnly: true, Browseable: true, Enabled: true, ValidUsers: []string{}, Options: []Option{}}
+	s := Share{Name: sec.name, Browseable: true, Enabled: true, Options: []Option{}}
+	raw := rawAccess{readOnly: true}
+	var masks []Option
 	for _, p := range sec.params {
 		switch normKey(p.Key) {
 		case "path", "directory":
@@ -116,19 +122,52 @@ func shareFromSection(sec section) Share {
 		case "comment":
 			s.Comment = p.Value
 		case "readonly":
-			s.ReadOnly = parseBool(p.Value, true)
+			raw.readOnly = parseBool(p.Value, true)
 		case "writable", "writeable", "writeok":
-			s.ReadOnly = !parseBool(p.Value, false)
+			raw.readOnly = !parseBool(p.Value, false)
 		case "browseable", "browsable":
 			s.Browseable = parseBool(p.Value, true)
 		case "guestok", "public":
-			s.GuestOK = parseBool(p.Value, false)
+			raw.guestOK = parseBool(p.Value, false)
 		case "validusers":
-			s.ValidUsers = strings.FieldsFunc(p.Value, func(r rune) bool { return r == ' ' || r == ',' || r == '\t' })
+			raw.valid = splitList(p.Value)
+		case "readlist":
+			raw.read = splitList(p.Value)
+		case "writelist":
+			raw.write = splitList(p.Value)
+		case "invalidusers":
+			raw.invalid = splitList(p.Value)
 		case "available":
 			s.Enabled = parseBool(p.Value, true)
+		case "forcegroup":
+			if strings.EqualFold(strings.TrimPrefix(p.Value, "+"), ShareGroup) {
+				raw.forceGroup = p.Value
+			} else {
+				s.Options = append(s.Options, p)
+			}
+		case "createmask", "directorymask":
+			masks = append(masks, p)
 		default:
 			s.Options = append(s.Options, p)
+		}
+	}
+	raw.apply(&s)
+	for _, m := range masks {
+		// The masks LocoStor writes itself with "fix permissions".
+		ours := s.FixPermissions && ((normKey(m.Key) == "createmask" && m.Value == "0664") ||
+			(normKey(m.Key) == "directorymask" && m.Value == "0775"))
+		if !ours {
+			s.Options = append(s.Options, m)
+		}
+	}
+	s.GuestOK = s.Guest != LevelNone
+	s.ReadOnly = !s.Writable()
+	s.ValidUsers = []string{}
+	if s.Everyone == LevelNone {
+		for _, a := range s.Access {
+			if a.Level != LevelDeny {
+				s.ValidUsers = append(s.ValidUsers, a.Name)
+			}
 		}
 	}
 	return s

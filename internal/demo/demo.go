@@ -5,11 +5,13 @@ package demo
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Phydran6/LocoStor/internal/fsutil"
 	"github.com/Phydran6/LocoStor/internal/nfs"
@@ -43,6 +45,9 @@ func (r *Runner) Run(_ context.Context, _ string, name string, args ...string) (
 		if len(args) > 0 && args[0] == "is-active" {
 			return []byte("active\n"), nil
 		}
+		if len(args) > 1 && args[0] == "list-unit-files" {
+			return []byte(args[1] + " enabled enabled\n"), nil
+		}
 		return nil, nil
 	case "pdbedit":
 		names := make([]string, 0, len(r.users))
@@ -66,6 +71,17 @@ func (r *Runner) Run(_ context.Context, _ string, name string, args ...string) (
 		return nil, nil
 	case "smartctl":
 		return smartctl(args), nil
+	case "getent":
+		if len(args) > 0 && args[0] == "passwd" {
+			var b strings.Builder
+			for n, uid := range r.users {
+				fmt.Fprintf(&b, "%s:x:%s:%s::/nonexistent:/usr/sbin/nologin\n", n, uid, uid)
+			}
+			return []byte(b.String()), nil
+		}
+		if len(args) > 0 && args[0] == "group" {
+			return []byte("users:x:100:\nlocostor:x:997:\nfamily:x:1100:alice,bob\nbackup:x:1101:media\n"), nil
+		}
 	}
 	// testparm, smbcontrol, id, useradd, ...: pretend success.
 	return nil, nil
@@ -304,4 +320,56 @@ func Filesystems() []sysinfo.Filesystem {
 		{Mount: "/mnt/raid", Source: "/dev/md0", Type: "ext4", Size: 3*tb + 600*gb, Used: 2*tb + 300*gb, Avail: 1*tb + 300*gb},
 		{Mount: "/mnt/raid5", Source: "/dev/md1", Type: "xfs", Size: 7*tb + 200*gb, Used: 1*tb + 800*gb, Avail: 5*tb + 400*gb},
 	}
+}
+
+// Exec fakes the output of long-running commands for background tasks.
+func Exec(ctx context.Context, env []string, out io.Writer, name string, args ...string) error {
+	line := func(s string, d time.Duration) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(d):
+		}
+		fmt.Fprintln(out, s)
+		return true
+	}
+	cmd := name + " " + strings.Join(args, " ")
+	switch {
+	case strings.Contains(cmd, "apt-get update"):
+		for _, l := range []string{
+			"Hit:1 http://deb.debian.org/debian bookworm InRelease",
+			"Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]",
+			"Get:3 http://security.debian.org/debian-security bookworm-security InRelease [48.0 kB]",
+			"Get:4 http://security.debian.org/debian-security bookworm-security/main amd64 Packages [241 kB]",
+			"Fetched 344 kB in 1s (412 kB/s)",
+			"Reading package lists...",
+		} {
+			if !line(l, 250*time.Millisecond) {
+				return ctx.Err()
+			}
+		}
+	case strings.Contains(cmd, "apt-get") && (strings.Contains(cmd, "upgrade") || strings.Contains(cmd, "install")):
+		for _, l := range []string{
+			"Reading package lists...", "Building dependency tree...", "Reading state information...",
+			"Calculating upgrade...",
+			"The following packages will be upgraded:",
+			"  libssl3 openssl samba samba-common",
+			"4 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+			"Get:1 http://security.debian.org/debian-security bookworm-security/main amd64 libssl3 amd64 3.0.15-1~deb12u1 [2,025 kB]",
+			"Get:2 http://security.debian.org/debian-security bookworm-security/main amd64 openssl amd64 3.0.15-1~deb12u1 [1,427 kB]",
+			"Fetched 3,452 kB in 1s (3,105 kB/s)",
+			"Preparing to unpack .../libssl3_3.0.15-1~deb12u1_amd64.deb ...",
+			"Unpacking libssl3:amd64 (3.0.15-1~deb12u1) over (3.0.14-1~deb12u2) ...",
+			"Setting up libssl3:amd64 (3.0.15-1~deb12u1) ...",
+			"Setting up openssl (3.0.15-1~deb12u1) ...",
+			"Processing triggers for libc-bin (2.36-9+deb12u9) ...",
+		} {
+			if !line(l, 300*time.Millisecond) {
+				return ctx.Err()
+			}
+		}
+	default:
+		line("(demo) "+name+" ok", 200*time.Millisecond)
+	}
+	return nil
 }

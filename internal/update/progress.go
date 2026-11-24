@@ -60,9 +60,36 @@ func (u *Updater) step(phase, format string, args ...any) {
 	}
 	u.progress.Log = append(u.progress.Log, LogLine{Time: time.Now(), Msg: msg})
 	action := u.progress.Action
+	hook := u.hook
 	u.mu.Unlock()
 	log.Printf("%s: %s", action, msg)
+	if hook != nil {
+		hook(msg)
+	}
 }
+
+// InstallLatest downloads, verifies and installs the latest release like
+// StartUpdate, but synchronously and without restarting: each step is
+// reported to logf, and the caller restarts with RestartSoon.
+func (u *Updater) InstallLatest(ctx context.Context, logf func(string)) error {
+	if err := u.begin("update"); err != nil {
+		return err
+	}
+	u.mu.Lock()
+	u.hook, u.noRestart = logf, true
+	u.mu.Unlock()
+	err := u.apply(ctx)
+	u.mu.Lock()
+	u.hook, u.noRestart = nil, false
+	u.mu.Unlock()
+	if err != nil {
+		u.fail(err)
+	}
+	return err
+}
+
+// RestartSoon restarts the service after a short delay.
+func (u *Updater) RestartSoon() { u.restartSoon() }
 
 func (u *Updater) fail(err error) {
 	u.mu.Lock()
@@ -219,7 +246,12 @@ func (u *Updater) apply(ctx context.Context) error {
 		return fmt.Errorf("install new binary: %w", err)
 	}
 	u.step("restarting", "Installed. Restarting LocoStor…")
-	u.restartSoon()
+	u.mu.Lock()
+	noRestart := u.noRestart
+	u.mu.Unlock()
+	if !noRestart {
+		u.restartSoon()
+	}
 	return nil
 }
 

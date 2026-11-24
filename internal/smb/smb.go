@@ -23,29 +23,40 @@ import (
 
 // Share is one SMB share.
 type Share struct {
-	Name       string   `json:"name"`
-	Path       string   `json:"path"`
-	Comment    string   `json:"comment"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Comment    string `json:"comment"`
+	Browseable bool   `json:"browseable"`
+	Enabled    bool   `json:"enabled"`
+
+	// Everyone is the access of every SMB user not listed in Access:
+	// write, read or none.
+	Everyone string `json:"everyone"`
+	// Access lists users and groups (@name) with read, write or deny.
+	Access []ACE `json:"access"`
+	// Guest is the access without a password: none, read or write.
+	Guest string `json:"guest"`
+	// FixPermissions makes the filesystem allow what the share allows
+	// (force group + folder permissions for the LocoStor group).
+	FixPermissions bool `json:"fix_permissions"`
+
+	// Legacy fields, kept in sync for older clients and state files.
 	ReadOnly   bool     `json:"read_only"`
-	Browseable bool     `json:"browseable"`
 	GuestOK    bool     `json:"guest_ok"`
 	ValidUsers []string `json:"valid_users"`
-	Enabled    bool     `json:"enabled"`
+
 	// Options are additional smb.conf parameters, rendered verbatim.
 	Options []Option `json:"options"`
+
+	// Warnings are computed when listing (not stored), e.g. when the
+	// folder permissions would block writing.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Option is one extra "key = value" share parameter.
 type Option struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-}
-
-// User is a Samba user from the passdb.
-type User struct {
-	Name     string `json:"name"`
-	UID      string `json:"uid"`
-	FullName string `json:"full_name"`
 }
 
 // Options configures file locations.
@@ -71,7 +82,6 @@ func New(run sysexec.Runner, opts Options) *Manager {
 
 var (
 	shareNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]{0,78}\$?$`) // trailing $ = hidden share
-	principalRe = regexp.MustCompile(`^[@+&]?[A-Za-z0-9_.\-]{1,64}$`)
 	userNameRe  = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	reserved    = map[string]bool{"global": true, "homes": true, "printers": true, "print$": true, "ipc$": true}
 )
@@ -80,7 +90,29 @@ var (
 func (m *Manager) Shares() ([]Share, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.load()
+	shares, err := m.load()
+	if err == nil && !m.opts.SkipPathCheck {
+		for i := range shares {
+			shares[i].Warnings = pathWarnings(shares[i])
+		}
+	}
+	return shares, err
+}
+
+// Get returns one managed share.
+func (m *Manager) Get(name string) (*Share, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	shares, err := m.load()
+	if err != nil {
+		return nil, err
+	}
+	for i := range shares {
+		if strings.EqualFold(shares[i].Name, name) {
+			return &shares[i], nil
+		}
+	}
+	return nil, &valid.NotFound{What: "share " + name}
 }
 
 func (m *Manager) load() ([]Share, error) {
@@ -89,12 +121,14 @@ func (m *Manager) load() ([]Share, error) {
 		return nil, err
 	}
 	for i := range shares {
-		if shares[i].ValidUsers == nil {
-			shares[i].ValidUsers = []string{}
-		}
 		if shares[i].Options == nil {
 			shares[i].Options = []Option{}
 		}
+		_ = normalizeAccess(&shares[i]) // old state files
+		if shares[i].Access == nil {
+			shares[i].Access = []ACE{}
+		}
+		shares[i].Warnings = nil
 	}
 	sort.Slice(shares, func(i, j int) bool {
 		return strings.ToLower(shares[i].Name) < strings.ToLower(shares[j].Name)
@@ -125,18 +159,10 @@ func validateShare(s *Share, mustExist bool) error {
 	if err := valid.SingleLine("comment", s.Comment); err != nil {
 		return err
 	}
-	users := make([]string, 0, len(s.ValidUsers))
-	for _, u := range s.ValidUsers {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
-		}
-		if !principalRe.MatchString(u) {
-			return valid.Errorf("invalid user or group %q", u)
-		}
-		users = append(users, u)
+	s.Warnings = nil
+	if err := normalizeAccess(s); err != nil {
+		return err
 	}
-	s.ValidUsers = users
 	return validateOptions(s)
 }
 
@@ -164,6 +190,12 @@ func (m *Manager) Save(ctx context.Context, oldName string, s Share) (Share, err
 	}
 	if oldName != "" && idx < 0 {
 		return s, &valid.NotFound{What: "share " + oldName}
+	}
+	if s.FixPermissions {
+		// "force group" must name an existing group, or logins fail.
+		if err := EnsureGroup(ctx, m.run); err != nil {
+			return s, err
+		}
 	}
 	next := append([]Share(nil), shares...)
 	if idx >= 0 {
@@ -226,11 +258,12 @@ func writeShare(b *strings.Builder, s Share, comments []string) {
 	if s.Comment != "" {
 		fmt.Fprintf(b, "   comment = %s\n", s.Comment)
 	}
-	fmt.Fprintf(b, "   read only = %s\n", yesno(s.ReadOnly))
 	fmt.Fprintf(b, "   browseable = %s\n", yesno(s.Browseable))
-	fmt.Fprintf(b, "   guest ok = %s\n", yesno(s.GuestOK))
-	if len(s.ValidUsers) > 0 {
-		fmt.Fprintf(b, "   valid users = %s\n", strings.Join(s.ValidUsers, " "))
+	for _, o := range accessLines(s) {
+		fmt.Fprintf(b, "   %s = %s\n", o.Key, o.Value)
+	}
+	for _, o := range permissionLines(s) {
+		fmt.Fprintf(b, "   %s = %s\n", o.Key, o.Value)
 	}
 	for _, o := range s.Options {
 		fmt.Fprintf(b, "   %s = %s\n", o.Key, o.Value)
@@ -304,84 +337,6 @@ func reloadSamba(ctx context.Context, run sysexec.Runner) error {
 // Status returns the state of the Samba services.
 func (m *Manager) Status(ctx context.Context) map[string]string {
 	return map[string]string{"smbd": sysexec.ServiceState(ctx, m.run, "smbd")}
-}
-
-// Users lists Samba users.
-func (m *Manager) Users(ctx context.Context) ([]User, error) {
-	out, err := m.run.Run(ctx, "", "pdbedit", "-L")
-	if err != nil {
-		return nil, err
-	}
-	users := []User{}
-	for _, line := range strings.Split(string(out), "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), ":", 3)
-		if len(parts) < 2 || parts[0] == "" {
-			continue
-		}
-		u := User{Name: parts[0], UID: parts[1]}
-		if len(parts) == 3 {
-			u.FullName = parts[2]
-		}
-		users = append(users, u)
-	}
-	sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
-	return users, nil
-}
-
-func checkPassword(pw string) error {
-	if len(pw) < 8 || len(pw) > 127 {
-		return valid.Errorf("password must be 8 to 127 characters")
-	}
-	if strings.ContainsAny(pw, "\r\n\x00") {
-		return valid.Errorf("password must not contain line breaks")
-	}
-	return nil
-}
-
-// AddUser creates a Samba user. A matching Linux account without login
-// shell and home directory is created if needed.
-func (m *Manager) AddUser(ctx context.Context, name, password string) error {
-	if !userNameRe.MatchString(name) {
-		return valid.Errorf("user name must start with a lowercase letter and contain only a-z, 0-9, '_' or '-'")
-	}
-	if err := checkPassword(password); err != nil {
-		return err
-	}
-	if _, err := m.run.Run(ctx, "", "id", "-u", name); err != nil {
-		if _, err := m.run.Run(ctx, "", "useradd", "--no-create-home", "--shell", "/usr/sbin/nologin", name); err != nil {
-			return fmt.Errorf("create system user: %w", err)
-		}
-	}
-	if _, err := m.run.Run(ctx, password+"\n"+password+"\n", "smbpasswd", "-a", "-s", name); err != nil {
-		return fmt.Errorf("add samba user: %w", err)
-	}
-	return nil
-}
-
-// SetPassword changes a Samba user's password.
-func (m *Manager) SetPassword(ctx context.Context, name, password string) error {
-	if !userNameRe.MatchString(name) {
-		return &valid.NotFound{What: "user " + name}
-	}
-	if err := checkPassword(password); err != nil {
-		return err
-	}
-	if _, err := m.run.Run(ctx, password+"\n"+password+"\n", "smbpasswd", "-s", name); err != nil {
-		return fmt.Errorf("set password: %w", err)
-	}
-	return nil
-}
-
-// DeleteUser removes a user from the Samba passdb. The Linux account is
-// kept so file ownership stays intact.
-func (m *Manager) DeleteUser(ctx context.Context, name string) error {
-	if !userNameRe.MatchString(name) {
-		return &valid.NotFound{What: "user " + name}
-	}
-	if _, err := m.run.Run(ctx, "", "smbpasswd", "-x", name); err != nil {
-		return fmt.Errorf("delete samba user: %w", err)
-	}
-	return nil
 }
 
 // DefaultOptions returns the standard file locations under dataDir.

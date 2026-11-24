@@ -10,14 +10,18 @@
 
 ## Features
 
-- **SMB shares** – create, edit and remove Samba shares; manage SMB users
+- **SMB shares** – create, edit and remove Samba shares; per user and group *read & write*, *read only* or *denied*; folder permissions are fixed automatically so shares are never stuck read only
+- **SMB users** – add, enable/disable, repair, change password and **test the login** like a Windows PC
+- **Network name** – choose the server name and workgroup; the container's Samba only shows up in the network while it actually shares something
 - **NFS exports** – manage NFS-Ganesha exports (NFSv3/v4, client lists, squash)
 - **Shares of the Proxmox host** – the host's own SMB shares, Samba users and NFS exports are shown and can be edited; changes are made in place, so the host stays in charge and manual edits keep working
 - **Existing shares in the container** – shares from `smb.conf`, `ganesha.conf` and `/etc/exports` are detected and can be taken over
 - **RAID status** – read-only view of the host's mdadm arrays incl. rebuild progress
 - **SMART** – disk health via `smartctl`, USB disks via `-d sat`, sleeping disks are not woken up
-- **Self-update** – checks GitHub Releases, one-click update (SHA-256 verified) and rollback
-- **Secure login** – username + password, optional two-factor login (TOTP) with recovery codes
+- **Patch automation** – daily updates of LocoStor, the container's packages and (optionally) the Proxmox host, with a **live terminal** in the web UI; SHA-256 verified self-update and rollback
+- **Notifications** – RAID, SMART, temperature, free space and updates by **e-mail** (assistant with *Sign in with Microsoft/Google*, presets for WEB.DE, GMX, Telekom, …) or **Telegram** (@BotFather bot, connected with one link)
+- **Active Directory / LDAP** – domain accounts and groups for the shares
+- **Secure login** – username + password, **passkeys**, optional two-factor login (TOTP) with recovery codes
 - **HTTPS** – built in, via Caddy or Nginx Proxy Manager, or behind your own reverse proxy – chosen during install
 - Dark mode, responsive layout, single binary without dependencies
 
@@ -60,6 +64,79 @@ share pages.
   applies the same checks as LocoStor itself (no system directories, no
   smb.conf options that run commands).
 
+## Share permissions
+
+Every share has a default for *all SMB users* (read & write, read only or
+no access), exceptions per user or `@group` (read & write, read only,
+denied) and a setting for guests. LocoStor writes the matching
+`read only`, `valid users`, `read list`, `write list` and `invalid users`.
+
+Samba can only allow what the Linux permissions of the folder allow – a
+folder owned by `root` with mode `755` stays read only for everybody. With
+**Fix folder permissions** (default for new shares) LocoStor gives the group
+`locostor` read/write rights on the folder via POSIX ACLs (new files inherit
+them) and lets Samba sessions use that group (`force group`). Owners and
+other permissions stay as they are. The shield button on a share runs it
+again, e.g. after copying files in on the host.
+
+## In the network
+
+*SMB shares → In the network* sets the server name (`\\NAS2`), workgroup
+and description, separately for the container and the Proxmox host. With
+**Automatic** (default in the container) the server only announces itself
+while it shares something – a container without shares stops Samba and does
+not appear as a second server next to the host. Windows 10/11 find servers
+via WS-Discovery; `wsdd` is installed and announces the Samba name.
+
+## Automatic updates
+
+*Update → Automatic updates* runs every day (default 03:30):
+
+| Part | Default | Options |
+| --- | --- | --- |
+| LocoStor releases | install | install, notify, off |
+| Container packages | all updates | all, security only, notify, off |
+| Proxmox host packages | check and notify | all (`dist-upgrade`), security only, notify, off |
+
+The host agent is updated together with LocoStor. Every run – and *Update
+now* – shows its output live in a terminal and is kept in the task log.
+Shares keep running; Samba restarts briefly when it gets an update.
+
+On GitHub, Dependabot proposes dependency updates daily and they are merged
+when CI passes. A daily job checks the latest release binary with
+`govulncheck`; when Go or a module has a security fix, it builds a patch
+release automatically, which installations then pick up the next night.
+
+## Notifications
+
+*Integrations → Notifications*:
+
+- **E-mail** – enter the address, the assistant detects the provider. Microsoft
+  365/Outlook.com and Google use *Sign in with …* (OAuth, no password stored);
+  WEB.DE, GMX, Telekom, IONOS, STRATO, iCloud, Yahoo, Posteo, mailbox.org and
+  any other SMTP server work with (app) passwords.
+- **Telegram** – create a bot with [@BotFather](https://t.me/BotFather), paste
+  the token, open the link (or scan the QR code) and press *Start*.
+
+For one-click Microsoft/Google sign-in without an own app registration, set
+the repository variables `LOCOSTOR_MS_CLIENT_ID`, `LOCOSTOR_GOOGLE_CLIENT_ID`
+and the secret `LOCOSTOR_GOOGLE_CLIENT_SECRET`; the release workflow builds
+them in. Otherwise the assistant explains how to register an app (5 minutes).
+
+## Passkeys
+
+*Settings → Passkeys* adds Face ID, Touch ID, Windows Hello, a phone or a
+security key. Browsers only allow passkeys on **HTTPS with a trusted
+certificate and a host name** (not an IP address), e.g. via Caddy or Nginx
+Proxy Manager with a domain.
+
+## Active Directory / LDAP
+
+*Integrations → AD / LDAP* joins the container to an Active Directory domain
+(winbind; the container's DNS server must be the domain controller) or
+connects it to OpenLDAP with the Samba schema. Domain users and groups such
+as `@"domain users"` can then be used on the shares.
+
 ## HTTPS
 
 During installation you choose how the web UI is reached. The question
@@ -89,6 +166,7 @@ Manager does this by default).
 
 ## Security
 
+- Passkeys (WebAuthn) as password-less, phishing-proof login.
 - Username + password (bcrypt), optional **two-factor login** with an
   authenticator app (TOTP, RFC 6238) and ten single-use recovery codes
   (stored hashed). Set it up under *Settings*.
@@ -169,7 +247,12 @@ internal/nfs      NFS-Ganesha exports
 internal/raid     /proc/mdstat parser
 internal/smart    smartctl JSON parser
 internal/update   GitHub Releases self-update
-internal/auth     login, TOTP, sessions, throttling
+internal/maintenance  daily patch automation
+internal/system   apt updates
+internal/tasks    background tasks with live output
+internal/notify   e-mail / Telegram notifications, RAID/SMART monitor
+internal/directory  Active Directory / LDAP
+internal/auth     login, passkeys, TOTP, sessions, throttling
 internal/tlsutil  self-signed certificates
 internal/demo     fake backends for -demo
 web/              Svelte 5 + Tailwind 4 frontend (embedded from web/dist)

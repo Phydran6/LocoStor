@@ -23,6 +23,7 @@ func (s *MemStore) Credentials() Credentials {
 	defer s.mu.Unlock()
 	c := s.c
 	c.RecoveryCodes = append([]string(nil), s.c.RecoveryCodes...)
+	c.Passkeys = append([]Passkey(nil), s.c.Passkeys...)
 	return c
 }
 

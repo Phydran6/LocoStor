@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to release (used by the security workflow)
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -10,8 +16,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v5
         with:
@@ -23,31 +33,40 @@ jobs:
         working-directory: web
         run: npm ci && npm run build
 
+      # Always the newest Go patch release, so fixes in the standard
+      # library reach every build.
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
+          check-latest: true
 
       - name: Test
         run: go test ./...
 
       - name: Build binaries
+        env:
+          # Optional app registrations for "Sign in with Microsoft/Google"
+          # in the e-mail assistant (repository variables / secrets).
+          MS_CLIENT_ID: ${{ vars.LOCOSTOR_MS_CLIENT_ID }}
+          GOOGLE_CLIENT_ID: ${{ vars.LOCOSTOR_GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.LOCOSTOR_GOOGLE_CLIENT_SECRET }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           mkdir -p dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath \
-              -ldflags "-s -w -X main.version=$VERSION" \
+              -ldflags "-s -w -X main.version=$VERSION -X main.msClientID=$MS_CLIENT_ID -X main.googleClientID=$GOOGLE_CLIENT_ID -X main.googleClientSecret=$GOOGLE_CLIENT_SECRET" \
               -o "dist/locostor-linux-$arch" ./cmd/locostor
           done
           cd dist && sha256sum locostor-linux-* > SHA256SUMS
 
       - name: Release notes from CHANGELOG
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           awk -v v="$VERSION" '
             /^## \[/ { if (p) exit; if (index($0, "## [" v "]") == 1) { p = 1; next } }
             p' CHANGELOG.md > notes.md
-          test -s notes.md || echo "Release $GITHUB_REF_NAME" > notes.md
+          test -s notes.md || echo "Release $TAG" > notes.md
           cat notes.md
 
       - name: Publish release
@@ -55,5 +74,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PRERELEASE=""
-          case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md $PRERELEASE
+          case "$TAG" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.md --verify-tag $PRERELEASE

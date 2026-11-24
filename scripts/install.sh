@@ -272,9 +272,12 @@ install_container() {
   say "Installing packages (samba, nfs-ganesha, smartmontools${extra:+, $extra})"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
+  # acl: folder permissions for shares; smbclient: login test of SMB users
   # shellcheck disable=SC2086
   apt-get install -y -qq --no-install-recommends \
-    samba nfs-ganesha nfs-ganesha-vfs smartmontools curl ca-certificates $extra >/dev/null </dev/null
+    samba smbclient acl nfs-ganesha nfs-ganesha-vfs smartmontools curl ca-certificates $extra >/dev/null </dev/null
+  # WS-Discovery, so Windows 10/11 lists the server (not in every release).
+  apt-get install -y -qq --no-install-recommends wsdd >/dev/null 2>&1 </dev/null || true
 
   install_binary
 
@@ -336,6 +339,10 @@ AGENT_MP=/var/lib/locostor/host      # the same directory inside the container
 # in $AGENT_DIR, which is bind-mounted into the container.
 setup_host_agent() {
   install_binary
+  # Folder permissions of host shares use POSIX ACLs.
+  if ! command -v setfacl >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq acl >/dev/null 2>&1 </dev/null || true
+  fi
   mkdir -p "$AGENT_DIR"
   chmod 700 "$AGENT_DIR"
   cat >/etc/systemd/system/locostor-host.service <<'EOF'

@@ -20,18 +20,20 @@ type SmartDevice struct {
 // Config is the on-disk configuration. It holds secrets and is written
 // with mode 0600.
 type Config struct {
-	Listen        string        `json:"listen"`
-	Username      string        `json:"username"`
-	PasswordHash  string        `json:"password_hash,omitempty"`
-	TOTPSecret    string        `json:"totp_secret,omitempty"`
-	RecoveryCodes []string      `json:"recovery_codes,omitempty"`
-	UpdateRepo    string        `json:"update_repo"`
-	DataDir       string        `json:"data_dir"`
-	TLSCert       string        `json:"tls_cert,omitempty"`
-	TLSKey        string        `json:"tls_key,omitempty"`
-	HTTPRedirect  []string      `json:"http_redirect,omitempty"` // plain HTTP addresses redirecting to HTTPS
-	HostSocket    string        `json:"host_socket,omitempty"`   // agent on the Proxmox host
-	SmartDevices  []SmartDevice `json:"smart_devices,omitempty"`
+	Listen        string         `json:"listen"`
+	Username      string         `json:"username"`
+	PasswordHash  string         `json:"password_hash,omitempty"`
+	TOTPSecret    string         `json:"totp_secret,omitempty"`
+	RecoveryCodes []string       `json:"recovery_codes,omitempty"`
+	Passkeys      []auth.Passkey `json:"passkeys,omitempty"`
+	UserHandle    string         `json:"user_handle,omitempty"`
+	UpdateRepo    string         `json:"update_repo"`
+	DataDir       string         `json:"data_dir"`
+	TLSCert       string         `json:"tls_cert,omitempty"`
+	TLSKey        string         `json:"tls_key,omitempty"`
+	HTTPRedirect  []string       `json:"http_redirect,omitempty"` // plain HTTP addresses redirecting to HTTPS
+	HostSocket    string         `json:"host_socket,omitempty"`   // agent on the Proxmox host
+	SmartDevices  []SmartDevice  `json:"smart_devices,omitempty"`
 
 	path string
 	mu   sync.Mutex
@@ -81,14 +83,18 @@ func (c *Config) Credentials() auth.Credentials {
 		PasswordHash:  c.PasswordHash,
 		TOTPSecret:    c.TOTPSecret,
 		RecoveryCodes: append([]string(nil), c.RecoveryCodes...),
+		Passkeys:      append([]auth.Passkey(nil), c.Passkeys...),
+		UserHandle:    c.UserHandle,
 	}
 }
 
 // UpdateCredentials implements auth.Store.
 func (c *Config) UpdateCredentials(fn func(*auth.Credentials)) error {
 	return c.Update(func(c *Config) {
-		cr := auth.Credentials{Username: c.Username, PasswordHash: c.PasswordHash, TOTPSecret: c.TOTPSecret, RecoveryCodes: c.RecoveryCodes}
+		cr := auth.Credentials{Username: c.Username, PasswordHash: c.PasswordHash, TOTPSecret: c.TOTPSecret, RecoveryCodes: c.RecoveryCodes,
+			Passkeys: append([]auth.Passkey(nil), c.Passkeys...), UserHandle: c.UserHandle}
 		fn(&cr)
 		c.Username, c.PasswordHash, c.TOTPSecret, c.RecoveryCodes = cr.Username, cr.PasswordHash, cr.TOTPSecret, cr.RecoveryCodes
+		c.Passkeys, c.UserHandle = cr.Passkeys, cr.UserHandle
 	})
 }
