@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-24
+
 ### Fixed
 
 - **SMB users could not be created with a password manager (e.g. Bitwarden)**: an autofilled user name with uppercase letters, dots or an `@`, or an empty *Repeat password*, made the browser silently block *Save* (its hint bubble was hidden behind the password manager). The dialog now checks the input itself and shows the problem in the dialog. Spaces around the user name are removed and uppercase letters are turned into lowercase, and the values are read directly from the fields, so autofill that sends no input events also works
+
+### Changed
+
+- Updated build dependencies (Svelte 5.59, Vite 8.3, Tailwind CSS 4.3.5) and GitHub Actions
 
 ## [0.5.0] - 2026-11-24
 
@@ -121,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer script, systemd unit and Proxmox setup guide
 - GitHub Actions for CI and releases (linux/amd64, linux/arm64)
 
-[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Phydran6/LocoStor/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/Phydran6/LocoStor/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Phydran6/LocoStor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Phydran6/LocoStor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Phydran6/LocoStor/compare/v0.2.0...v0.3.0
