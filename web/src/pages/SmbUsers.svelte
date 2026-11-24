@@ -92,14 +92,44 @@
     }
   }
 
+  // The form is checked here instead of by the browser (novalidate): with
+  // password managers like Bitwarden the browser's validation bubble is
+  // easily hidden, so an autofilled name such as "Max.Mustermann" or an
+  // empty "Repeat password" silently blocked the Save button.
+  function check(form) {
+    // Read the fields directly: autofill does not always fire input events.
+    const field = (id) => form.querySelector(`#${id}`);
+    if (mode === 'add') {
+      name = field('u-name').value.trim().toLowerCase();
+      field('u-name').value = name;
+    }
+    password = field('u-pw').value;
+    if (mode !== 'test') repeat = field('u-pw2').value;
+
+    const fail = (id, msg) => {
+      field(id)?.focus();
+      return msg;
+    };
+    if (mode === 'add') {
+      if (!name) return fail('u-name', 'Enter a user name');
+      if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(name)) {
+        return fail('u-name', `"${name}" is not a valid user name: use only lowercase letters, digits, "_" and "-" (max. 32 characters, not starting with a digit or "-")`);
+      }
+    }
+    if (!password) return fail('u-pw', 'Enter a password');
+    if (mode === 'test') return '';
+    if (password.length < 8) return fail('u-pw', 'The password must have at least 8 characters');
+    if (!repeat) return fail('u-pw2', 'Repeat the password in the second field');
+    if (password !== repeat) return fail('u-pw2', 'Passwords do not match');
+    return '';
+  }
+
   async function save(e) {
     e.preventDefault();
+    formError = check(e.currentTarget);
+    if (formError) return;
     if (mode === 'test') {
       test();
-      return;
-    }
-    if (password !== repeat) {
-      formError = 'Passwords do not match';
       return;
     }
     saving = true;
@@ -210,11 +240,11 @@
   title={mode === 'add' ? `Add SMB user${onHost ? ' on the host' : ''}` : mode === 'test' ? `Test login of "${name}"` : `Change password of "${name}"`}
   bind:open={modalOpen}
 >
-  <form id="user-form" class="space-y-4" onsubmit={save}>
+  <form id="user-form" class="space-y-4" onsubmit={save} novalidate>
     {#if mode === 'add'}
       <div>
         <label class="label" for="u-name">User name</label>
-        <input id="u-name" class="input" bind:value={name} required pattern="[a-z_][a-z0-9_\-]*" maxlength="32" autocomplete="off" />
+        <input id="u-name" class="input" bind:value={name} required maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
         <p class="hint">Lowercase letters, digits, "_" and "-". A Linux account without login is created if needed.</p>
       </div>
     {/if}
